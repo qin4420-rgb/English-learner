@@ -1,6 +1,6 @@
 "use client";
 
-import type { CSSProperties, SyntheticEvent } from "react";
+import type { CSSProperties } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -12,6 +12,7 @@ type Props = {
   vocabulary: VocabularyItem[];
   onReloadResources: () => Promise<void>;
   onReloadVocabulary: () => Promise<void>;
+  onReloadNotes: () => Promise<void>;
   onNotice: (message: string) => void;
 };
 
@@ -38,6 +39,16 @@ type LookupResult = {
 
 type LookupDetails = Record<LookupTab, string[]>;
 type LookupTab = "context" | "usage" | "examples" | "mnemonic" | "roots" | "etymology" | "collocations" | "synonyms" | "similarWords" | "replacements" | "derivedForms";
+type ReadingMode = "frame" | "page";
+type SelectionAction = {
+  text: string;
+  context: string;
+  anchor: string;
+  kind: "term" | "sentence";
+  top: number;
+  left: number;
+};
+type SentenceInsight = { text: string; action: "explain" | "translate"; result: string };
 
 const LOOKUP_TABS: { id: LookupTab; label: string }[] = [
   { id: "context", label: "语境" },
@@ -179,7 +190,12 @@ function MarkdownBlock({ markdown, className }: { markdown: string; className?: 
   return <div className={className} data-reader-block><ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown></div>;
 }
 
-export default function ArticleReader({ courses, resources, vocabulary, onReloadResources, onReloadVocabulary, onNotice }: Props) {
+function applyReaderFocusMode(enabled: boolean) {
+  if (enabled) document.documentElement.setAttribute("data-reader-focus", "true");
+  else document.documentElement.removeAttribute("data-reader-focus");
+}
+
+export default function ArticleReader({ courses, resources, vocabulary, onReloadResources, onReloadVocabulary, onReloadNotes, onNotice }: Props) {
   const readingCourses = useMemo(() => courses.filter((course) => course.status !== "hidden" && course.courseType === "reading"), [courses]);
   const articles = useMemo(() => resources.filter((resource) => resource.collection === "library" && resource.markdownObjectKey), [resources]);
   const [selectedCourseId, setSelectedCourseId] = useState(0);
@@ -193,6 +209,10 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
   const [contentWidth, setContentWidth] = useState(DEFAULT_PROGRESS.contentWidth);
   const [translationMode, setTranslationMode] = useState(DEFAULT_PROGRESS.translationMode);
   const [wordbookOpen, setWordbookOpen] = useState(true);
+  const [shelfOpen, setShelfOpen] = useState(true);
+  const [readingMode, setReadingMode] = useState<ReadingMode>("frame");
+  const [focusMode, setFocusMode] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [lookupLoading, setLookupLoading] = useState(false);
   const [lookup, setLookup] = useState<LookupResult | null>(null);
   const [lookupTab, setLookupTab] = useState<LookupTab>("context");
@@ -201,6 +221,10 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
   const [openFolderKey, setOpenFolderKey] = useState("unfiled");
   const [newFolderName, setNewFolderName] = useState("");
   const [folderFormOpen, setFolderFormOpen] = useState(false);
+  const [folderMenuId, setFolderMenuId] = useState<number | null>(null);
+  const [selectionAction, setSelectionAction] = useState<SelectionAction | null>(null);
+  const [sentenceInsight, setSentenceInsight] = useState<SentenceInsight | null>(null);
+  const [sentenceLoading, setSentenceLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restoredResourceRef = useRef(0);
@@ -214,6 +238,28 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
   const readerLoading = Boolean(readingResource && readerContent.resourceId !== readingResource.id);
   const document = useMemo(() => buildReaderDocument(readerMarkdown), [readerMarkdown]);
   const selectedProgress = readingResource ? progressMap[readingResource.id] : undefined;
+
+  useEffect(() => {
+    queueMicrotask(() => {
+      setShelfOpen(localStorage.getItem("english-room-reader-shelf") !== "closed");
+      setWordbookOpen(localStorage.getItem("english-room-reader-dictionary") !== "closed");
+      setReadingMode(localStorage.getItem("english-room-reader-mode") === "page" ? "page" : "frame");
+    });
+  }, []);
+
+  useEffect(() => { localStorage.setItem("english-room-reader-shelf", shelfOpen ? "open" : "closed"); }, [shelfOpen]);
+  useEffect(() => { localStorage.setItem("english-room-reader-dictionary", wordbookOpen ? "open" : "closed"); }, [wordbookOpen]);
+  useEffect(() => { localStorage.setItem("english-room-reader-mode", readingMode); }, [readingMode]);
+
+  useEffect(() => {
+    applyReaderFocusMode(focusMode);
+    const handleKey = (event: KeyboardEvent) => { if (event.key === "Escape") setFocusMode(false); };
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      applyReaderFocusMode(false);
+      window.removeEventListener("keydown", handleKey);
+    };
+  }, [focusMode]);
 
   const loadFolders = useCallback(async () => {
     const data = await jsonRequest<{ folders: ReadingFolderItem[] }>("/api/reading-folders");
@@ -268,12 +314,18 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
         const container = scrollRef.current;
         if (!container) return;
         const anchorElement = saved?.anchor ? container.querySelector<HTMLElement>(`[data-section-id="${saved.anchor}"]`) : null;
-        if ((saved?.progressRatio || 0) > 0) container.scrollTop = (saved?.progressRatio || 0) * Math.max(0, container.scrollHeight - container.clientHeight);
-        else if (anchorElement) container.scrollTop = Math.max(0, anchorElement.offsetTop - 20);
+        if (readingMode === "frame") {
+          if ((saved?.progressRatio || 0) > 0) container.scrollTop = (saved?.progressRatio || 0) * Math.max(0, container.scrollHeight - container.clientHeight);
+          else if (anchorElement) container.scrollTop = Math.max(0, anchorElement.offsetTop - 20);
+        } else {
+          const articleTop = window.scrollY + container.getBoundingClientRect().top;
+          if ((saved?.progressRatio || 0) > 0) window.scrollTo({ top: articleTop + (saved?.progressRatio || 0) * Math.max(0, container.scrollHeight - window.innerHeight), behavior: "auto" });
+          else anchorElement?.scrollIntoView({ block: "start", behavior: "auto" });
+        }
         restoredResourceRef.current = readingResource.id;
       });
     });
-  }, [progressMap, progressReady, readerMarkdown, readingResource]);
+  }, [progressMap, progressReady, readerMarkdown, readingMode, readingResource]);
 
   const persistProgress = useCallback(async (resourceId: number, ratio: number, anchor: string) => {
     const outlineJson = JSON.stringify(document.sections.map((section) => ({ id: section.id, title: section.title, level: section.level })));
@@ -304,12 +356,18 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
     return anchor;
   }
 
-  function handleScroll() {
-    const container = scrollRef.current;
-    if (!container || !readingResource || restoredResourceRef.current !== readingResource.id) return;
-    const total = Math.max(1, container.scrollHeight - container.clientHeight);
-    const ratio = Math.min(1, Math.max(0, container.scrollTop / total));
-    const anchor = currentAnchor(container);
+  function currentPageAnchor(container: HTMLDivElement) {
+    const sections = Array.from(container.querySelectorAll<HTMLElement>("[data-reader-section]"));
+    let anchor = sections[0]?.dataset.sectionId || "";
+    for (const section of sections) {
+      if (section.getBoundingClientRect().top <= 150) anchor = section.dataset.sectionId || anchor;
+      else break;
+    }
+    return anchor;
+  }
+
+  const recordProgress = useCallback((ratio: number, anchor: string) => {
+    if (!readingResource) return;
     setProgressMap((current) => ({
       ...current,
       [readingResource.id]: {
@@ -330,7 +388,31 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
       },
     }));
     scheduleProgressSave(ratio, anchor);
+  }, [contentWidth, fontFamily, fontSize, lineHeight, readingResource, scheduleProgressSave, translationMode]);
+
+  function handleScroll() {
+    const container = scrollRef.current;
+    if (!container || !readingResource || restoredResourceRef.current !== readingResource.id) return;
+    const total = Math.max(1, container.scrollHeight - container.clientHeight);
+    const ratio = Math.min(1, Math.max(0, container.scrollTop / total));
+    const anchor = currentAnchor(container);
+    recordProgress(ratio, anchor);
   }
+
+  useEffect(() => {
+    if (readingMode !== "page" || !readingResource) return;
+    const handlePageScroll = () => {
+      const container = scrollRef.current;
+      if (!container || restoredResourceRef.current !== readingResource.id) return;
+      const articleTop = window.scrollY + container.getBoundingClientRect().top;
+      const total = Math.max(1, container.scrollHeight - window.innerHeight);
+      const ratio = Math.min(1, Math.max(0, (window.scrollY - articleTop + 120) / total));
+      recordProgress(ratio, currentPageAnchor(container));
+      setSelectionAction(null);
+    };
+    window.addEventListener("scroll", handlePageScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handlePageScroll);
+  }, [readingMode, readingResource, recordProgress]);
 
   useEffect(() => {
     if (!readingResource || restoredResourceRef.current !== readingResource.id) return;
@@ -341,7 +423,15 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
   function jumpToSection(sectionId: string) {
     const container = scrollRef.current;
     const section = container?.querySelector<HTMLElement>(`[data-section-id="${sectionId}"]`);
-    if (container && section) container.scrollTo({ top: Math.max(0, section.offsetTop - 18), behavior: "smooth" });
+    if (!container || !section) return;
+    if (readingMode === "page") section.scrollIntoView({ block: "start", behavior: "smooth" });
+    else container.scrollTo({ top: Math.max(0, section.offsetTop - 18), behavior: "smooth" });
+  }
+
+  function changeReadingMode(next: ReadingMode) {
+    restoredResourceRef.current = 0;
+    setReadingMode(next);
+    setSelectionAction(null);
   }
 
   async function createFolder() {
@@ -408,6 +498,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
 
   async function lookupWord(word: string, context: string, anchor: string) {
     setWordbookOpen(true);
+    setSentenceInsight(null);
     setLookupTab("context");
     setManualDefinition("");
     setLookupLoading(true);
@@ -427,15 +518,76 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
     }
   }
 
-  function handleWordSelection(event: SyntheticEvent<HTMLElement>) {
-    const selected = (window.getSelection()?.toString() || "").replace(/\s+/g, " ").trim();
-    const term = selected.match(/^[A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,7}$/)?.[0];
-    if (!term) return;
-    const target = event.target as HTMLElement;
-    const block = target.closest<HTMLElement>("[data-reader-block]");
-    const section = target.closest<HTMLElement>("[data-reader-section]");
-    const context = (block?.textContent || section?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 800);
-    void lookupWord(term, context, section?.dataset.sectionId || "");
+  function captureSelection() {
+    const selection = window.getSelection();
+    const selected = (selection?.toString() || "").replace(/\s+/g, " ").trim();
+    if (!selection || selection.rangeCount === 0 || selected.length < 2 || selected.length > 1400) {
+      setSelectionAction(null);
+      return;
+    }
+    const node = selection.anchorNode;
+    const target = (node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement) as HTMLElement | null;
+    const block = target?.closest<HTMLElement>("[data-reader-block]");
+    const section = target?.closest<HTMLElement>("[data-reader-section]");
+    if (!block && !section) return;
+    const wordCount = (selected.match(/[A-Za-z][A-Za-z'-]*/g) || []).length;
+    const term = /^[A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,7}$/.test(selected);
+    const sentence = wordCount >= 4 && (wordCount > 8 || selected.length >= 32 || /[.!?][”"']?$/.test(selected));
+    if (!term && !sentence) return;
+    const rect = selection.getRangeAt(0).getBoundingClientRect();
+    const context = (block?.textContent || section?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 2400);
+    setSelectionAction({
+      text: selected,
+      context,
+      anchor: section?.dataset.sectionId || "",
+      kind: sentence ? "sentence" : "term",
+      top: Math.max(72, rect.top - 54),
+      left: Math.min(window.innerWidth - 20, Math.max(20, rect.left + rect.width / 2)),
+    });
+  }
+
+  async function saveSelection(action: SelectionAction) {
+    if (!readingResource) return;
+    try {
+      if (action.kind === "term") {
+        await jsonRequest("/api/vocabulary", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ word: action.text, sourceType: "resource", sourceId: String(readingResource.id), sourceAnchor: action.anchor, sourceSentence: action.context, tags: "精读" }),
+        });
+        await onReloadVocabulary();
+        onNotice("已保存到 FSRS 单词本，可稍后补充词典与 AI 解释");
+      } else {
+        await jsonRequest("/api/notes", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ title: `精读摘录：${readingResource.title}`, content: `> ${action.text}\n\n来源：${readingResource.title}`, referenceType: "resource", referenceId: String(readingResource.id), anchor: action.anchor, tags: "精读摘录" }),
+        });
+        await onReloadNotes();
+        onNotice("所选句子已保存到学习笔记");
+      }
+      setSelectionAction(null);
+      window.getSelection()?.removeAllRanges();
+    } catch (error) { onNotice((error as Error).message); }
+  }
+
+  async function runSentenceAction(action: "explain" | "translate", selection: SelectionAction) {
+    setWordbookOpen(true);
+    setLookup(null);
+    setSentenceLoading(true);
+    setSentenceInsight({ text: selection.text, action, result: "正在处理所选句子…" });
+    setSelectionAction(null);
+    try {
+      const response = await jsonRequest<{ result: string }>("/api/reading-actions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action, text: selection.text, context: selection.context }),
+      });
+      setSentenceInsight({ text: selection.text, action, result: response.result });
+    } catch (error) {
+      setSentenceInsight(null);
+      onNotice((error as Error).message);
+    } finally { setSentenceLoading(false); }
   }
 
   async function addLookupToWordbook() {
@@ -515,8 +667,9 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
     });
   }
 
-  return <div className={`reader-shell ${wordbookOpen ? "wordbook-open" : ""}`}>
-    <aside className="panel reader-navigator">
+  return <>
+  <div className={`reader-shell ${shelfOpen ? "shelf-open" : ""} ${wordbookOpen ? "wordbook-open" : ""} reading-mode-${readingMode} ${focusMode ? "focus-mode" : ""}`}>
+    {shelfOpen && <aside className="panel reader-navigator">
       <div className="reader-nav-heading"><div><p className="eyebrow">READING SHELF</p><h2>精读书架</h2></div><button onClick={() => setFolderFormOpen((value) => !value)}>{folderFormOpen ? "取消" : "＋ 文件夹"}</button></div>
       <select value={selectedCourseId} onChange={(event) => setSelectedCourseId(Number(event.target.value))} aria-label="选择阅读课程">
         <option value="0">全部文章</option>
@@ -532,7 +685,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
           const key = `folder-${folder.id}`;
           const items = readableResources.filter((resource) => resource.readingFolderId === folder.id);
           return <section className={openFolderKey === key ? "open" : ""} key={folder.id}>
-            <div className="reader-folder-heading"><button onClick={() => setOpenFolderKey((current) => current === key ? "" : key)}><span>{openFolderKey === key ? "▾" : "▸"}</span><strong>{folder.name}</strong><em>{items.length}</em></button><button onClick={() => void renameFolder(folder)} aria-label={`重命名 ${folder.name}`}>改</button><button onClick={() => void deleteFolder(folder)} aria-label={`删除 ${folder.name}`}>删</button></div>
+            <div className="reader-folder-heading"><button onClick={() => setOpenFolderKey((current) => current === key ? "" : key)}><span>{openFolderKey === key ? "▾" : "▸"}</span><strong>{folder.name}</strong><em>{items.length}</em></button><span className="reader-folder-menu"><button className="ellipsis-button" onClick={() => setFolderMenuId((current) => current === folder.id ? null : folder.id)} aria-label={`管理文件夹 ${folder.name}`}>⋯</button>{folderMenuId === folder.id && <span><button onClick={() => { setFolderMenuId(null); void renameFolder(folder); }}>重命名</button><button onClick={() => { setFolderMenuId(null); void deleteFolder(folder); }}>删除文件夹</button></span>}</span></div>
             {openFolderKey === key && <div className="reader-article-list">{renderArticleItems(items)}{!items.length && <small className="reader-folder-empty">可从资源库或未分类中添加文章</small>}</div>}
           </section>;
         })}
@@ -541,7 +694,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
       <nav className="reader-toc" aria-label="文章章节目录">
         {document.sections.map((section) => <button key={section.id} onClick={() => jumpToSection(section.id)}>{section.title}</button>)}
       </nav>
-    </aside>
+    </aside>}
 
     <section className="panel reader-main">
       <header className="reader-toolbar">
@@ -553,16 +706,16 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
             <button className={translationMode === "translation" ? "active" : ""} onClick={() => setTranslationMode("translation")} disabled={!document.hasTranslation}>译文</button>
           </div>
           <div className="reader-segment" aria-label="文章字号">
-            <button onClick={() => setFontSize((value) => Math.max(14, value - 1))}>A−</button><span>{fontSize}</span><button onClick={() => setFontSize((value) => Math.min(30, value + 1))}>A＋</button>
+            <button onClick={() => setFontSize((value) => Math.max(14, value - 1))}>A−</button><button onClick={() => setFontSize((value) => Math.min(30, value + 1))}>A＋</button>
           </div>
-          <select value={fontFamily} onChange={(event) => setFontFamily(event.target.value)} aria-label="文章字体"><option value="serif">衬线字体</option><option value="sans">无衬线字体</option></select>
-          <select value={lineHeight} onChange={(event) => setLineHeight(Number(event.target.value))} aria-label="文章行距"><option value="1.65">紧凑行距</option><option value="1.9">舒适行距</option><option value="2.15">宽松行距</option></select>
-          <select value={contentWidth} onChange={(event) => setContentWidth(event.target.value)} aria-label="文章版心"><option value="narrow">窄版</option><option value="standard">标准</option><option value="wide">宽版</option></select>
-          <button className="button secondary" onClick={() => setWordbookOpen((value) => !value)}>{wordbookOpen ? "隐藏词典" : "打开词典"}</button>
+          <span className="reader-settings-wrap"><button className="button secondary" onClick={() => setSettingsOpen((value) => !value)} aria-expanded={settingsOpen}>阅读设置 ▾</button>{settingsOpen && <span className="reader-settings-popover"><label>阅读方式<select value={readingMode} onChange={(event) => changeReadingMode(event.target.value as ReadingMode)}><option value="frame">框内阅读</option><option value="page">页面阅读</option></select></label><label>文章字体<select value={fontFamily} onChange={(event) => setFontFamily(event.target.value)}><option value="serif">衬线字体</option><option value="sans">无衬线字体</option></select></label><label>文章行距<select value={lineHeight} onChange={(event) => setLineHeight(Number(event.target.value))}><option value="1.65">紧凑</option><option value="1.9">舒适</option><option value="2.15">宽松</option></select></label><label>正文版心<select value={contentWidth} onChange={(event) => setContentWidth(event.target.value)}><option value="narrow">窄版</option><option value="standard">标准</option><option value="wide">宽版</option></select></label></span>}</span>
+          <button className={`button secondary ${shelfOpen ? "active" : ""}`} onClick={() => setShelfOpen((value) => !value)}>书架</button>
+          <button className={`button secondary ${wordbookOpen ? "active" : ""}`} onClick={() => setWordbookOpen((value) => !value)}>词典</button>
+          <button className={`button secondary ${focusMode ? "active" : ""}`} onClick={() => setFocusMode((value) => !value)}>⛶ 专注阅读</button>
         </div>
         <div className="reader-progress-track"><span style={{ width: `${Math.round((selectedProgress?.progressRatio || 0) * 100)}%` }} /></div>
       </header>
-      <div className={`reader-scroll reader-font-${fontFamily} reader-width-${contentWidth}`} style={readerStyle} ref={scrollRef} role="textbox" aria-label="文章正文，可选择英文单词或短语查询" aria-readonly="true" aria-multiline="true" tabIndex={0} onScroll={handleScroll} onMouseUp={handleWordSelection} onTouchEnd={handleWordSelection} onKeyUp={handleWordSelection}>
+      <div className={`reader-scroll reader-font-${fontFamily} reader-width-${contentWidth}`} style={readerStyle} ref={scrollRef} role="textbox" aria-label="文章正文，可选择英文单词、短语或句子" aria-readonly="true" aria-multiline="true" tabIndex={0} onScroll={() => { if (readingMode === "frame") handleScroll(); setSelectionAction(null); }} onMouseUp={captureSelection} onTouchEnd={captureSelection} onKeyUp={captureSelection}>
         {readerLoading ? <div className="empty-state">正在读取并优化文章排版…</div> : <article className="reader-article">
           {document.sections.map((section) => <section id={section.id} data-reader-section data-section-id={section.id} key={section.id}>
             <h2>{section.title}</h2>
@@ -578,7 +731,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
     {wordbookOpen && <button className="reader-dictionary-backdrop" onClick={() => setWordbookOpen(false)} aria-label="关闭阅读词典" />}
     {wordbookOpen && <aside className="panel reader-dictionary">
       <div className="reader-dictionary-heading"><div><p className="eyebrow">CONTEXT DICTIONARY</p><h2>随读词典</h2><p>选中正文中的单词或短语，解释只针对当前词项和原句语境。</p></div><button onClick={() => setWordbookOpen(false)} aria-label="关闭阅读词典">×</button></div>
-      {lookup ? <div className="reader-word-detail">
+      {sentenceInsight ? <div className="reader-sentence-insight"><span>{sentenceInsight.action === "explain" ? "句子解释" : "句子翻译"}</span><blockquote>{sentenceInsight.text}</blockquote><p>{sentenceLoading ? "正在处理…" : sentenceInsight.result}</p></div> : lookup ? <div className="reader-word-detail">
         <div className="reader-word-title"><div><strong>{lookup.word}</strong><span>{lookup.phonetic}</span></div><i>{lookupLoading ? "查询中…" : lookup.aiEnhanced ? "AI 已结合本句" : "基础词典结果"}</i></div>
         <section className="reader-base-dictionary"><h3>词典释义</h3><p>{lookup.dictionaryDefinition || "暂未查询到"}</p>{lookup.dictionaryEnglish && <details><summary>查看英文词典原义</summary><p>{lookup.dictionaryEnglish}</p></details>}</section>
         <section className="reader-ai-explanation"><div className="reader-ai-heading"><h3>AI 解释</h3><span>解释词或词组，不翻译整篇文章</span></div><div className="reader-ai-tabs">{availableLookupTabs.map((tab) => <button className={activeLookupTab === tab.id ? "active" : ""} key={tab.id} onClick={() => setLookupTab(tab.id)}>{tab.label}</button>)}</div><div className="reader-ai-copy">{(lookup.aiDetails?.[activeLookupTab] || [lookup.aiExplanation]).map((line, index) => <p key={index}>{line}</p>)}</div></section>
@@ -588,5 +741,9 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
       </div> : <div className="reader-word-empty"><strong>选中一个英文单词或短语</strong><span>这里会显示词典义、当前语境、用法、搭配和相近表达；AI 不会翻译整篇文章。</span></div>}
       <div className="reader-saved-words"><h3>本文生词 · {articleWords.length}</h3>{articleWords.slice(0, 30).map((item) => <button key={item.id} onClick={() => showExistingWord(item)}><strong>{item.word}</strong><small>{item.dictionaryDefinition || item.definition || "等待补充释义"}</small></button>)}</div>
     </aside>}
-  </div>;
+  </div>
+  {selectionAction && <div className={`reader-selection-actions ${selectionAction.kind}`} style={{ top: selectionAction.top, left: selectionAction.left }} role="toolbar" aria-label={selectionAction.kind === "term" ? "选词操作" : "选句操作"} onMouseDown={(event) => event.preventDefault()}>
+    {selectionAction.kind === "term" ? <><button onClick={() => { const selection = selectionAction; setSelectionAction(null); void lookupWord(selection.text, selection.context, selection.anchor); }}>查词</button><button onClick={() => void saveSelection(selectionAction)}>保存</button></> : <><button onClick={() => void runSentenceAction("explain", selectionAction)}>解释</button><button onClick={() => void runSentenceAction("translate", selectionAction)}>翻译</button><button disabled title="朗读将在媒体 Provider 接入后启用">朗读</button><button disabled title="跟读将在 Pronunciation Provider 接入后启用">跟读</button><button disabled title="听写将在 STT Provider 接入后启用">听写</button><button onClick={() => void saveSelection(selectionAction)}>保存</button></>}
+  </div>}
+  </>;
 }

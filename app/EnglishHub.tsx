@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useState } from "react";
 import LearningDesk, { type DeskTab } from "./LearningDesk";
 import MaintenanceCenter from "./MaintenanceCenter";
-import ProgressCenter from "./ProgressCenter";
 import ResourceLibrary from "./ResourceLibrary";
 import ToolDirectory from "./ToolDirectory";
 import type {
@@ -13,30 +12,33 @@ import type {
   OneDriveStatus,
   PlanItem,
   ProcessingJob,
+  ProviderStatus,
   ProgressItem,
   ResourceItem,
   UploadItem,
   VocabularyItem,
 } from "./types";
 
-type View = "desk" | "tools" | "library" | "progress" | "admin";
+type View = "desk" | "tools" | "library" | "admin";
 type FontSize = "compact" | "standard" | "large" | "xlarge";
 
 const NAVIGATION: { id: View; label: string; icon: string }[] = [
   { id: "desk", label: "学习台", icon: "⌂" },
-  { id: "tools", label: "学习工具网站", icon: "▦" },
   { id: "library", label: "资源库", icon: "◇" },
-  { id: "progress", label: "学习进度", icon: "✓" },
+  { id: "tools", label: "学习工具", icon: "▦" },
   { id: "admin", label: "维护中心", icon: "⚙" },
 ];
 
 const DESK_TABS: { id: DeskTab; label: string; icon: string }[] = [
   { id: "overview", label: "学习首页", icon: "·" },
-  { id: "courses", label: "在学课程管理", icon: "·" },
-  { id: "nce", label: "新概念英语", icon: "·" },
-  { id: "reading", label: "文章精读", icon: "·" },
+  { id: "courses", label: "在学课程", icon: "·" },
+  { id: "reading", label: "文章阅读", icon: "·" },
+  { id: "listening", label: "听力训练", icon: "·" },
+  { id: "speaking", label: "口语训练", icon: "·" },
+  { id: "vocabulary", label: "单词学习", icon: "·" },
+  { id: "grammar", label: "语法学习", icon: "·" },
   { id: "notes", label: "学习笔记", icon: "·" },
-  { id: "vocabulary", label: "单词本", icon: "·" },
+  { id: "progress", label: "学习进度", icon: "·" },
 ];
 
 async function jsonRequest<T>(url: string, options?: RequestInit): Promise<T> {
@@ -62,6 +64,7 @@ export default function EnglishHub({ displayName }: { displayName: string }) {
   const [jobs, setJobs] = useState<ProcessingJob[]>([]);
   const [oneDrive, setOneDrive] = useState<OneDriveStatus | null>(null);
   const [aiConfigured, setAiConfigured] = useState(false);
+  const [providers, setProviders] = useState<ProviderStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
   const [importing, setImporting] = useState(false);
@@ -75,13 +78,15 @@ export default function EnglishHub({ displayName }: { displayName: string }) {
   const loadVocabulary = useCallback(async () => setVocabulary((await jsonRequest<{ vocabulary: VocabularyItem[] }>("/api/vocabulary")).vocabulary), []);
   const loadActivities = useCallback(async () => setActivities((await jsonRequest<{ activities: ActivityItem[] }>("/api/activities")).activities), []);
   const loadSystem = useCallback(async () => {
-    const [processing, drive] = await Promise.all([
+    const [processing, drive, providerData] = await Promise.all([
       jsonRequest<{ jobs: ProcessingJob[]; aiConfigured: boolean }>("/api/processing"),
       jsonRequest<OneDriveStatus>("/api/onedrive/status"),
+      jsonRequest<{ providers: ProviderStatus[] }>("/api/providers"),
     ]);
     setJobs(processing.jobs);
     setAiConfigured(processing.aiConfigured);
     setOneDrive(drive);
+    setProviders(providerData.providers);
   }, []);
 
   const refreshAll = useCallback(async () => {
@@ -96,7 +101,8 @@ export default function EnglishHub({ displayName }: { displayName: string }) {
       const savedFontSize = window.localStorage.getItem("english-room-font-size") as FontSize | null;
       if (savedFontSize && ["compact", "standard", "large", "xlarge"].includes(savedFontSize)) setFontSize(savedFontSize);
       if (hash === "dashboard") setViewState("desk");
-      else if (hash === "course") { setViewState("desk"); setDeskTabState("nce"); }
+      else if (hash === "course" || hash === "desk-nce") { setViewState("desk"); setDeskTabState("listening"); }
+      else if (hash === "progress") { setViewState("desk"); setDeskTabState("progress"); }
       else if (hash.startsWith("desk-")) {
         const requestedTab = hash.slice(5) as DeskTab;
         if (DESK_TABS.some((item) => item.id === requestedTab)) { setViewState("desk"); setDeskTabState(requestedTab); }
@@ -189,11 +195,10 @@ export default function EnglishHub({ displayName }: { displayName: string }) {
 
         <div className="content-wrap">
           {loading ? <div className="loading-screen"><span className="loader" />正在打开你的学习空间…</div> : <>
-            {view === "desk" && <LearningDesk activeTab={deskTab} onTabChange={setDeskTab} courses={courses} resources={resources} notes={notes} vocabulary={vocabulary} progress={progress} onReloadResources={loadResources} onReloadCourses={loadCourses} onReloadNotes={loadNotes} onReloadVocabulary={loadVocabulary} onReloadProgress={loadProgress} onNotice={setNotice} />}
+            {view === "desk" && <LearningDesk activeTab={deskTab} onTabChange={setDeskTab} courses={courses} resources={resources} notes={notes} vocabulary={vocabulary} progress={progress} activities={activities} plans={plans} onReloadResources={loadResources} onReloadCourses={loadCourses} onReloadNotes={loadNotes} onReloadVocabulary={loadVocabulary} onReloadProgress={loadProgress} onReloadActivities={loadActivities} onReloadPlans={loadPlans} onNotice={setNotice} />}
             {view === "tools" && <ToolDirectory resources={resources} importing={importing} onImport={importDirectory} onReload={loadResources} onNotice={setNotice} onToggleFavorite={toggleFavorite} onRemove={removeResource} onReorder={reorderResources} />}
             {view === "library" && <ResourceLibrary resources={resources} onRead={(resource) => { window.localStorage.setItem("english-room-reader-resource", String(resource.id)); setDeskTab("reading"); }} onMaintain={() => setView("admin")} onReloadResources={loadResources} onNotice={setNotice} onToggleFavorite={toggleFavorite} />}
-            {view === "progress" && <ProgressCenter activities={activities} progress={progress} plans={plans} onReloadActivities={loadActivities} onReloadPlans={loadPlans} onNotice={setNotice} />}
-            {view === "admin" && <MaintenanceCenter oneDrive={oneDrive} aiConfigured={aiConfigured} jobs={jobs} uploads={uploads} resources={resources} onReload={refreshAll} onNotice={setNotice} onExport={exportData} />}
+            {view === "admin" && <MaintenanceCenter oneDrive={oneDrive} aiConfigured={aiConfigured} providers={providers} jobs={jobs} uploads={uploads} resources={resources} onReload={refreshAll} onNotice={setNotice} onExport={exportData} />}
           </>}
         </div>
         <footer><span>English Room · 私人英语学习空间</span><span>Markdown 内容与学习记录由你维护 · 外部资源版权归原作者所有</span></footer>

@@ -2,11 +2,12 @@
 
 import { FormEvent, useState } from "react";
 import ArticleReader from "./ArticleReader";
-import NcePlayer from "./NcePlayer";
+import ListeningStudio from "./ListeningStudio";
+import ProgressCenter from "./ProgressCenter";
 import VocabularyCenter from "./VocabularyCenter";
-import type { CourseItem, NoteItem, ProgressItem, ResourceItem, VocabularyItem } from "./types";
+import type { ActivityItem, CourseItem, NoteItem, PlanItem, ProgressItem, ResourceItem, VocabularyItem } from "./types";
 
-export type DeskTab = "overview" | "courses" | "nce" | "reading" | "notes" | "vocabulary";
+export type DeskTab = "overview" | "courses" | "reading" | "listening" | "speaking" | "vocabulary" | "grammar" | "notes" | "progress";
 
 type Props = {
   activeTab: DeskTab;
@@ -16,11 +17,15 @@ type Props = {
   notes: NoteItem[];
   vocabulary: VocabularyItem[];
   progress: ProgressItem[];
+  activities: ActivityItem[];
+  plans: PlanItem[];
   onReloadResources: () => Promise<void>;
   onReloadCourses: () => Promise<void>;
   onReloadNotes: () => Promise<void>;
   onReloadVocabulary: () => Promise<void>;
   onReloadProgress: () => Promise<void>;
+  onReloadActivities: () => Promise<void>;
+  onReloadPlans: () => Promise<void>;
   onNotice: (message: string) => void;
 };
 
@@ -37,8 +42,8 @@ const COURSE_ICONS: Record<string, string> = {
 
 export default function LearningDesk(props: Props) {
   const {
-    activeTab, onTabChange, courses, resources, notes, vocabulary, progress,
-    onReloadResources, onReloadCourses, onReloadNotes, onReloadVocabulary, onReloadProgress, onNotice,
+    activeTab, onTabChange, courses, resources, notes, vocabulary, progress, activities, plans,
+    onReloadResources, onReloadCourses, onReloadNotes, onReloadVocabulary, onReloadProgress, onReloadActivities, onReloadPlans, onNotice,
   } = props;
   const visibleCourses = courses.filter((course) => course.status !== "hidden");
   const pinnedCourses = visibleCourses.filter((course) => course.pinned);
@@ -83,8 +88,8 @@ export default function LearningDesk(props: Props) {
     } catch (error) { onNotice((error as Error).message); }
   }
 
-  if (activeTab === "nce") {
-    return <section><div className="page-heading"><div><p className="eyebrow">NCE COURSE</p><h1>新概念英语精听</h1><p>新概念课程现在属于学习台；逐句字幕、翻译、笔记和进度继续自动保存。</p></div><button className="button secondary" onClick={() => onTabChange("courses")}>管理课程</button></div><NcePlayer progress={progress} onSaved={onReloadProgress} /></section>;
+  if (activeTab === "listening") {
+    return <ListeningStudio resources={resources} progress={progress} onReloadProgress={onReloadProgress} onNotice={onNotice} />;
   }
 
   if (activeTab === "courses") {
@@ -92,7 +97,7 @@ export default function LearningDesk(props: Props) {
   }
 
   if (activeTab === "reading") {
-    return <section className="reading-studio-page"><div className="page-heading reading-heading"><div><p className="eyebrow">READING STUDIO</p><h1>文章精读</h1><p>参考欧路词典的随读查词流程，加入精读书架、词组语境解释、文章目录、阅读设置和云端进度。</p></div></div><ArticleReader courses={courses} resources={resources} vocabulary={vocabulary} onReloadResources={onReloadResources} onReloadVocabulary={onReloadVocabulary} onNotice={onNotice} /></section>;
+    return <section className="reading-studio-page"><div className="page-heading reading-heading"><div><p className="eyebrow">READING STUDIO</p><h1>文章阅读</h1><p>书架、正文、随读词典与云端进度组成完整阅读空间；支持框内阅读、页面阅读和专注模式。</p></div></div><ArticleReader courses={courses} resources={resources} vocabulary={vocabulary} onReloadResources={onReloadResources} onReloadVocabulary={onReloadVocabulary} onReloadNotes={onReloadNotes} onNotice={onNotice} /></section>;
   }
 
   if (activeTab === "notes") {
@@ -103,5 +108,14 @@ export default function LearningDesk(props: Props) {
     return <VocabularyCenter vocabulary={vocabulary} onReload={onReloadVocabulary} onNotice={onNotice} />;
   }
 
-  return <section><div className="welcome-block"><div><p className="eyebrow">MY LEARNING DESK</p><h1>今天从哪一门开始？</h1><p>固定课程会显示在这里；课程、阅读、笔记和单词都从同一个学习台进入。</p></div><button className="button primary" onClick={() => onTabChange(progress.length ? "nce" : "courses")}>{progress.length ? "继续上次学习" : "安排学习课程"} <span>→</span></button></div><div className="desk-course-grid">{pinnedCourses.map((course) => <button className="panel desk-course-card" key={course.id} onClick={() => onTabChange(course.courseType === "nce" ? "nce" : course.courseType === "reading" ? "reading" : course.courseType === "vocabulary" ? "vocabulary" : "courses")}><span>{COURSE_ICONS[course.courseType] || COURSE_ICONS.custom}</span><div><small>{course.courseType === "nce" ? "精听课程" : course.courseType === "reading" ? "阅读课程" : "自定义课程"}</small><strong>{course.title}</strong><p>{course.description}</p></div><em>{course.resourceCount ? `${course.resourceCount} 篇` : "打开"} →</em></button>)}<button className="panel desk-course-card add-course" onClick={() => onTabChange("courses")}><span>＋</span><div><strong>管理在学课程</strong><p>固定、隐藏或添加新课程</p></div></button></div><div className="desk-quick-grid"><button className="panel" onClick={() => onTabChange("reading")}><span>▤</span><strong>文章精读</strong><small>{resources.filter((item) => item.collection === "library" && item.markdownObjectKey).length} 篇Markdown文章</small></button><button className="panel" onClick={() => onTabChange("notes")}><span>✎</span><strong>学习笔记</strong><small>{notes.length} 条已保存笔记</small></button><button className="panel" onClick={() => onTabChange("vocabulary")}><span>Aa</span><strong>单词本</strong><small>{vocabulary.filter((item) => !item.mastered).length} 个待复习单词</small></button></div></section>;
+  if (activeTab === "progress") {
+    return <ProgressCenter activities={activities} progress={progress} plans={plans} onReloadActivities={onReloadActivities} onReloadPlans={onReloadPlans} onNotice={onNotice} />;
+  }
+
+  if (activeTab === "speaking" || activeTab === "grammar") {
+    const speaking = activeTab === "speaking";
+    return <section><div className="page-heading"><div><p className="eyebrow">{speaking ? "SPEAKING STUDIO" : "GRAMMAR STUDIO"}</p><h1>{speaking ? "口语训练" : "语法学习"}</h1><p>{speaking ? "跟读、录音与口语评估将在 Pronunciation Provider 配置后接入。" : "语法课程、错题与专项练习将在后续版本接入。"}</p></div></div><div className="panel coming-soon-panel"><span>{speaking ? "🎙" : "Aa"}</span><div><strong>即将接入</strong><p>{speaking ? "当前只建立页面与 Provider 接口，不生成虚假的口语评分。" : "当前只建立学习入口，不生成虚假的课程或练习数据。"}</p></div></div></section>;
+  }
+
+  return <section><div className="welcome-block"><div><p className="eyebrow">MY LEARNING DESK</p><h1>今天从哪一门开始？</h1><p>固定课程会显示在这里；听说读写、笔记、词汇与学习进度从同一个学习台进入。</p></div><button className="button primary" onClick={() => onTabChange(progress.length ? "listening" : "courses")}>{progress.length ? "继续上次学习" : "安排学习课程"} <span>→</span></button></div><div className="desk-course-grid">{pinnedCourses.map((course) => <button className="panel desk-course-card" key={course.id} onClick={() => onTabChange(course.courseType === "nce" || course.courseType === "listening" ? "listening" : course.courseType === "reading" ? "reading" : course.courseType === "vocabulary" ? "vocabulary" : "courses")}><span>{COURSE_ICONS[course.courseType] || COURSE_ICONS.custom}</span><div><small>{course.courseType === "nce" || course.courseType === "listening" ? "听力课程" : course.courseType === "reading" ? "阅读课程" : "自定义课程"}</small><strong>{course.title}</strong><p>{course.description}</p></div><em>{course.resourceCount ? `${course.resourceCount} 篇` : "打开"} →</em></button>)}<button className="panel desk-course-card add-course" onClick={() => onTabChange("courses")}><span>＋</span><div><strong>管理在学课程</strong><p>固定、隐藏或添加新课程</p></div></button></div><div className="desk-quick-grid"><button className="panel" onClick={() => onTabChange("reading")}><span>▤</span><strong>文章阅读</strong><small>{resources.filter((item) => item.collection === "library" && item.markdownObjectKey).length} 篇 Markdown 文章</small></button><button className="panel" onClick={() => onTabChange("listening")}><span>◉</span><strong>听力训练</strong><small>新概念、音频与视频统一学习</small></button><button className="panel" onClick={() => onTabChange("notes")}><span>✎</span><strong>学习笔记</strong><small>{notes.length} 条已保存笔记</small></button><button className="panel" onClick={() => onTabChange("vocabulary")}><span>Aa</span><strong>单词学习</strong><small>{vocabulary.filter((item) => !item.mastered).length} 个待复习单词</small></button></div></section>;
 }

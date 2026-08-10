@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 async function render() {
@@ -20,8 +21,30 @@ test("server-renders the private English learning hub", async () => {
   assert.match(html, /English Room/);
   assert.match(html, /私人英语学习空间/);
   assert.match(html, /学习台/);
-  assert.match(html, /学习工具网站/);
+  assert.match(html, /学习工具/);
   assert.match(html, /资源库/);
   assert.match(html, /维护中心/);
+  assert.match(html, /文章阅读/);
+  assert.match(html, /听力训练/);
+  assert.match(html, /学习进度/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
+});
+
+test("V1.1 keeps media and provider capabilities behind shared interfaces", async () => {
+  const [mediaPlayer, transcript, ncePlayer, providers, fixture] = await Promise.all([
+    readFile(new URL("../app/components/MediaLearningPlayer.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/TranscriptPanel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/NcePlayer.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/_lib/providers.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/_fixtures/media.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(mediaPlayer, /import\("react-player"\)/);
+  assert.match(mediaPlayer, /TranscriptPanel/);
+  assert.match(transcript, /回到当前句/);
+  assert.match(transcript, /循环当前句/);
+  assert.match(ncePlayer, /MediaLearningPlayer/);
+  assert.match(ncePlayer, /parseNceLrc/);
+  assert.match(providers, /OCRProvider/);
+  assert.match(providers, /PronunciationProvider/);
+  assert.match(fixture, /DEVELOPMENT_VIDEO_FIXTURE/);
 });

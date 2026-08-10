@@ -182,3 +182,27 @@ export type OneDriveStatus = {
   appFolder: string;
   retentionDays: number;
 };
+
+export type MediaKind = "audio" | "video";
+
+export type MediaSegment = {
+  id: string | number;
+  startMs: number;
+  endMs?: number;
+  originalText: string;
+  translationText?: string;
+};
+
+export type MediaProgressSnapshot = {
+  currentTimeMs: number;
+  durationMs: number;
+  completed: boolean;
+};
+
+export type ProviderStatus = {
+  id: "ai" | "ocr" | "stt" | "pronunciation";
+  label: string;
+  provider: string;
+  configured: boolean;
+  endpointConfigured: boolean;
+};

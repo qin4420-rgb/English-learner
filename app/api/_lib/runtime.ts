@@ -10,6 +10,13 @@ export type RuntimeBindings = {
   ONEDRIVE_REDIRECT_URI?: string;
   DEEPSEEK_API_KEY?: string;
   DEEPSEEK_MODEL?: string;
+  AI_PROVIDER?: string;
+  OCR_PROVIDER?: string;
+  OCR_ENDPOINT?: string;
+  STT_PROVIDER?: string;
+  STT_ENDPOINT?: string;
+  PRONUNCIATION_PROVIDER?: string;
+  PRONUNCIATION_ENDPOINT?: string;
 };
 
 let initialized: Promise<void> | null = null;

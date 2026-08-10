@@ -59,6 +59,16 @@ function mapResource(row: Record<string, unknown>) {
   };
 }
 
+function normalizeMetadataJson(value: string | undefined) {
+  if (!value?.trim()) return "{}";
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? JSON.stringify(parsed) : "{}";
+  } catch {
+    return "{}";
+  }
+}
+
 export async function GET(request: Request) {
   try {
     await ensureDatabase();
@@ -100,6 +110,7 @@ export async function POST(request: Request) {
       body.sourceUrl?.trim() || "",
       body.collection?.trim() || "library",
       body.iconUrl?.trim() || "",
+      normalizeMetadataJson(body.metadataJson),
       body.status || "active",
       Number.isFinite(body.sortOrder) ? Number(body.sortOrder) : 0,
       body.isFavorite ? 1 : 0,
@@ -107,13 +118,13 @@ export async function POST(request: Request) {
 
     if (body.id) {
       await getDatabase()
-        .prepare(`UPDATE resources SET title=?, description=?, category=?, level=?, skills=?, resource_type=?, url=?, source_name=?, source_url=?, collection=?, icon_url=?, status=?, sort_order=?, is_favorite=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?`)
+        .prepare(`UPDATE resources SET title=?, description=?, category=?, level=?, skills=?, resource_type=?, url=?, source_name=?, source_url=?, collection=?, icon_url=?, metadata_json=?, status=?, sort_order=?, is_favorite=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?`)
         .bind(...values, body.id, ownerId)
         .run();
     } else {
       await getDatabase()
-        .prepare(`INSERT INTO resources (owner_id,title,description,category,level,skills,resource_type,url,source_name,source_url,collection,icon_url,status,sort_order,is_favorite) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-          ON CONFLICT(owner_id,url) DO UPDATE SET title=excluded.title, description=excluded.description, category=excluded.category, level=excluded.level, skills=excluded.skills, resource_type=excluded.resource_type, source_name=excluded.source_name, source_url=excluded.source_url, status=excluded.status, sort_order=excluded.sort_order, updated_at=CURRENT_TIMESTAMP`)
+        .prepare(`INSERT INTO resources (owner_id,title,description,category,level,skills,resource_type,url,source_name,source_url,collection,icon_url,metadata_json,status,sort_order,is_favorite) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          ON CONFLICT(owner_id,url) DO UPDATE SET title=excluded.title, description=excluded.description, category=excluded.category, level=excluded.level, skills=excluded.skills, resource_type=excluded.resource_type, source_name=excluded.source_name, source_url=excluded.source_url, metadata_json=excluded.metadata_json, status=excluded.status, sort_order=excluded.sort_order, updated_at=CURRENT_TIMESTAMP`)
         .bind(ownerId, ...values)
         .run();
     }
