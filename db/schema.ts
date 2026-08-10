@@ -8,6 +8,22 @@ import {
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 
+export const readingFolders = sqliteTable(
+  "reading_folders",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    ownerId: text("owner_id").notNull(),
+    name: text("name").notNull(),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("idx_reading_folders_owner_name").on(table.ownerId, table.name),
+    index("idx_reading_folders_owner_sort").on(table.ownerId, table.sortOrder),
+  ],
+);
+
 export const resources = sqliteTable(
   "resources",
   {
@@ -32,6 +48,7 @@ export const resources = sqliteTable(
     issueDate: text("issue_date"),
     articleOrder: integer("article_order").notNull().default(0),
     parentId: integer("parent_id"),
+    readingFolderId: integer("reading_folder_id"),
     metadataJson: text("metadata_json").notNull().default("{}"),
     status: text("status").notNull().default("active"),
     sortOrder: integer("sort_order").notNull().default(0),
@@ -54,6 +71,10 @@ export const resources = sqliteTable(
       table.ownerId,
       table.collection,
       table.category,
+    ),
+    index("idx_resources_owner_reading_folder").on(
+      table.ownerId,
+      table.readingFolderId,
     ),
   ],
 );

@@ -19,10 +19,20 @@ export type ResourceItem = {
   issueDate: string;
   articleOrder: number;
   parentId: number | null;
+  readingFolderId: number | null;
   metadataJson: string;
   status: string;
   sortOrder: number;
   isFavorite: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ReadingFolderItem = {
+  id: number;
+  name: string;
+  sortOrder: number;
+  articleCount: number;
   createdAt: string;
   updatedAt: string;
 };

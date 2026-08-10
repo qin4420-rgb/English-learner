@@ -16,6 +16,7 @@ type Props = {
   notes: NoteItem[];
   vocabulary: VocabularyItem[];
   progress: ProgressItem[];
+  onReloadResources: () => Promise<void>;
   onReloadCourses: () => Promise<void>;
   onReloadNotes: () => Promise<void>;
   onReloadVocabulary: () => Promise<void>;
@@ -37,7 +38,7 @@ const COURSE_ICONS: Record<string, string> = {
 export default function LearningDesk(props: Props) {
   const {
     activeTab, onTabChange, courses, resources, notes, vocabulary, progress,
-    onReloadCourses, onReloadNotes, onReloadVocabulary, onReloadProgress, onNotice,
+    onReloadResources, onReloadCourses, onReloadNotes, onReloadVocabulary, onReloadProgress, onNotice,
   } = props;
   const visibleCourses = courses.filter((course) => course.status !== "hidden");
   const pinnedCourses = visibleCourses.filter((course) => course.pinned);
@@ -91,7 +92,7 @@ export default function LearningDesk(props: Props) {
   }
 
   if (activeTab === "reading") {
-    return <section className="reading-studio-page"><div className="page-heading reading-heading"><div><p className="eyebrow">READING STUDIO</p><h1>文章精读</h1><p>参考欧路词典的随读查词流程，加入文章目录、双语模式、阅读设置和云端进度。</p></div></div><ArticleReader courses={courses} resources={resources} vocabulary={vocabulary} onReloadVocabulary={onReloadVocabulary} onNotice={onNotice} /></section>;
+    return <section className="reading-studio-page"><div className="page-heading reading-heading"><div><p className="eyebrow">READING STUDIO</p><h1>文章精读</h1><p>参考欧路词典的随读查词流程，加入精读书架、词组语境解释、文章目录、阅读设置和云端进度。</p></div></div><ArticleReader courses={courses} resources={resources} vocabulary={vocabulary} onReloadResources={onReloadResources} onReloadVocabulary={onReloadVocabulary} onNotice={onNotice} /></section>;
   }
 
   if (activeTab === "notes") {

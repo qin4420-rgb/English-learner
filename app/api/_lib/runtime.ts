@@ -64,6 +64,7 @@ export async function ensureDatabase(): Promise<void> {
         issue_date TEXT,
         article_order INTEGER NOT NULL DEFAULT 0,
         parent_id INTEGER,
+        reading_folder_id INTEGER,
         metadata_json TEXT NOT NULL DEFAULT '{}',
         status TEXT NOT NULL DEFAULT 'active',
         sort_order INTEGER NOT NULL DEFAULT 0,
@@ -78,6 +79,16 @@ export async function ensureDatabase(): Promise<void> {
       database.prepare(
         "CREATE INDEX IF NOT EXISTS idx_resources_owner_category ON resources(owner_id, category)",
       ),
+      database.prepare(`CREATE TABLE IF NOT EXISTS reading_folders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`),
+      database.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_reading_folders_owner_name ON reading_folders(owner_id,name)"),
+      database.prepare("CREATE INDEX IF NOT EXISTS idx_reading_folders_owner_sort ON reading_folders(owner_id,sort_order)"),
       database.prepare(`CREATE TABLE IF NOT EXISTS study_progress (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         owner_id TEXT NOT NULL,
@@ -310,6 +321,7 @@ export async function ensureDatabase(): Promise<void> {
         ["issue_date", "ALTER TABLE resources ADD COLUMN issue_date TEXT"],
         ["article_order", "ALTER TABLE resources ADD COLUMN article_order INTEGER NOT NULL DEFAULT 0"],
         ["parent_id", "ALTER TABLE resources ADD COLUMN parent_id INTEGER"],
+        ["reading_folder_id", "ALTER TABLE resources ADD COLUMN reading_folder_id INTEGER"],
         ["metadata_json", "ALTER TABLE resources ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"],
       ] as const;
       for (const [name, statement] of additions) {
@@ -353,6 +365,7 @@ export async function ensureDatabase(): Promise<void> {
       await database.batch([
         database.prepare("CREATE INDEX IF NOT EXISTS idx_resources_owner_category_sort ON resources(owner_id,category,sort_order)"),
         database.prepare("CREATE INDEX IF NOT EXISTS idx_resources_owner_collection_category ON resources(owner_id,collection,category)"),
+        database.prepare("CREATE INDEX IF NOT EXISTS idx_resources_owner_reading_folder ON resources(owner_id,reading_folder_id)"),
         database.prepare("UPDATE resources SET collection='tool' WHERE source_name='EngLearner 资源目录' AND collection!='tool'"),
         database.prepare("CREATE INDEX IF NOT EXISTS idx_vocabulary_reviews_owner_word ON vocabulary_reviews(owner_id,vocabulary_id,reviewed_at)"),
         database.prepare("PRAGMA optimize"),

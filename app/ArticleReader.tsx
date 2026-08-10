@@ -1,15 +1,16 @@
 "use client";
 
-import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
+import type { CSSProperties, SyntheticEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { CourseItem, ReadingProgressItem, ResourceItem, VocabularyItem } from "./types";
+import type { CourseItem, ReadingFolderItem, ReadingProgressItem, ResourceItem, VocabularyItem } from "./types";
 
 type Props = {
   courses: CourseItem[];
   resources: ResourceItem[];
   vocabulary: VocabularyItem[];
+  onReloadResources: () => Promise<void>;
   onReloadVocabulary: () => Promise<void>;
   onNotice: (message: string) => void;
 };
@@ -31,8 +32,33 @@ type LookupResult = {
   example: string;
   exampleTranslation: string;
   sourceSentence: string;
+  aiDetails: LookupDetails;
   aiEnhanced: boolean;
 };
+
+type LookupDetails = Record<LookupTab, string[]>;
+type LookupTab = "context" | "usage" | "examples" | "mnemonic" | "roots" | "etymology" | "collocations" | "synonyms" | "similarWords" | "replacements" | "derivedForms";
+
+const LOOKUP_TABS: { id: LookupTab; label: string }[] = [
+  { id: "context", label: "语境" },
+  { id: "examples", label: "例句" },
+  { id: "usage", label: "用法" },
+  { id: "mnemonic", label: "助记" },
+  { id: "roots", label: "词根" },
+  { id: "etymology", label: "词源" },
+  { id: "collocations", label: "搭配" },
+  { id: "synonyms", label: "同义词" },
+  { id: "similarWords", label: "形近词" },
+  { id: "replacements", label: "替换" },
+  { id: "derivedForms", label: "派生词" },
+];
+
+function emptyLookupDetails(context = ""): LookupDetails {
+  return {
+    context: context ? [context] : [], usage: [], examples: [], mnemonic: [], roots: [], etymology: [],
+    collocations: [], synonyms: [], similarWords: [], replacements: [], derivedForms: [],
+  };
+}
 
 const DEFAULT_PROGRESS: Omit<ReadingProgressItem, "id" | "resourceId" | "lastReadAt"> = {
   progressRatio: 0,
@@ -153,7 +179,7 @@ function MarkdownBlock({ markdown, className }: { markdown: string; className?: 
   return <div className={className} data-reader-block><ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown></div>;
 }
 
-export default function ArticleReader({ courses, resources, vocabulary, onReloadVocabulary, onNotice }: Props) {
+export default function ArticleReader({ courses, resources, vocabulary, onReloadResources, onReloadVocabulary, onNotice }: Props) {
   const readingCourses = useMemo(() => courses.filter((course) => course.status !== "hidden" && course.courseType === "reading"), [courses]);
   const articles = useMemo(() => resources.filter((resource) => resource.collection === "library" && resource.markdownObjectKey), [resources]);
   const [selectedCourseId, setSelectedCourseId] = useState(0);
@@ -169,7 +195,12 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
   const [wordbookOpen, setWordbookOpen] = useState(true);
   const [lookupLoading, setLookupLoading] = useState(false);
   const [lookup, setLookup] = useState<LookupResult | null>(null);
+  const [lookupTab, setLookupTab] = useState<LookupTab>("context");
   const [manualDefinition, setManualDefinition] = useState("");
+  const [folders, setFolders] = useState<ReadingFolderItem[]>([]);
+  const [openFolderKey, setOpenFolderKey] = useState("unfiled");
+  const [newFolderName, setNewFolderName] = useState("");
+  const [folderFormOpen, setFolderFormOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restoredResourceRef = useRef(0);
@@ -183,6 +214,15 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
   const readerLoading = Boolean(readingResource && readerContent.resourceId !== readingResource.id);
   const document = useMemo(() => buildReaderDocument(readerMarkdown), [readerMarkdown]);
   const selectedProgress = readingResource ? progressMap[readingResource.id] : undefined;
+
+  const loadFolders = useCallback(async () => {
+    const data = await jsonRequest<{ folders: ReadingFolderItem[] }>("/api/reading-folders");
+    setFolders(data.folders);
+  }, []);
+
+  useEffect(() => {
+    queueMicrotask(() => void loadFolders().catch((error: Error) => onNotice(error.message)));
+  }, [loadFolders, onNotice]);
 
   useEffect(() => {
     jsonRequest<{ progress: ReadingProgressItem[] }>("/api/reading-progress")
@@ -304,11 +344,74 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
     if (container && section) container.scrollTo({ top: Math.max(0, section.offsetTop - 18), behavior: "smooth" });
   }
 
+  async function createFolder() {
+    const name = newFolderName.trim();
+    if (!name) return;
+    try {
+      const result = await jsonRequest<{ id: number }>("/api/reading-folders", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      setNewFolderName("");
+      setFolderFormOpen(false);
+      setOpenFolderKey(`folder-${result.id}`);
+      await loadFolders();
+      onNotice(`已建立精读文件夹“${name}”`);
+    } catch (error) {
+      onNotice((error as Error).message);
+    }
+  }
+
+  async function renameFolder(folder: ReadingFolderItem) {
+    const name = window.prompt("修改文件夹名称", folder.name)?.trim();
+    if (!name || name === folder.name) return;
+    try {
+      await jsonRequest("/api/reading-folders", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: folder.id, name }),
+      });
+      await loadFolders();
+      onNotice("文件夹名称已更新");
+    } catch (error) {
+      onNotice((error as Error).message);
+    }
+  }
+
+  async function deleteFolder(folder: ReadingFolderItem) {
+    if (!window.confirm(`删除“${folder.name}”文件夹？其中的文章会回到“未分类”，文章本身不会被删除。`)) return;
+    try {
+      await jsonRequest(`/api/reading-folders?id=${folder.id}`, { method: "DELETE" });
+      setOpenFolderKey("unfiled");
+      await Promise.all([loadFolders(), onReloadResources()]);
+      onNotice("文件夹已删除，原有文章已回到未分类");
+    } catch (error) {
+      onNotice((error as Error).message);
+    }
+  }
+
+  async function assignArticle(resourceId: number, folderId: number | null) {
+    try {
+      await jsonRequest("/api/reading-folders", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ resourceId, folderId }),
+      });
+      setOpenFolderKey(folderId ? `folder-${folderId}` : "unfiled");
+      await Promise.all([loadFolders(), onReloadResources()]);
+      onNotice(folderId ? "文章已加入精读文件夹" : "文章已移到未分类");
+    } catch (error) {
+      onNotice((error as Error).message);
+    }
+  }
+
   async function lookupWord(word: string, context: string, anchor: string) {
     setWordbookOpen(true);
+    setLookupTab("context");
     setManualDefinition("");
     setLookupLoading(true);
-    setLookup({ word, phonetic: "", dictionaryDefinition: "", dictionaryEnglish: "", aiExplanation: "正在分析…", example: "", exampleTranslation: "", sourceSentence: context, aiEnhanced: false });
+    setLookup({ word, phonetic: "", dictionaryDefinition: "", dictionaryEnglish: "", aiExplanation: "正在分析当前语境…", example: "", exampleTranslation: "", sourceSentence: context, aiDetails: emptyLookupDetails("正在分析当前语境…"), aiEnhanced: false });
     try {
       const result = await jsonRequest<LookupResult>("/api/vocabulary/lookup", {
         method: "POST",
@@ -324,15 +427,15 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
     }
   }
 
-  function handleWordSelection(event: ReactMouseEvent<HTMLElement>) {
-    const selected = window.getSelection()?.toString().trim() || "";
-    const word = selected.match(/^[A-Za-z][A-Za-z'-]{0,60}$/)?.[0];
-    if (!word) return;
+  function handleWordSelection(event: SyntheticEvent<HTMLElement>) {
+    const selected = (window.getSelection()?.toString() || "").replace(/\s+/g, " ").trim();
+    const term = selected.match(/^[A-Za-z][A-Za-z'-]*(?:\s+[A-Za-z][A-Za-z'-]*){0,7}$/)?.[0];
+    if (!term) return;
     const target = event.target as HTMLElement;
     const block = target.closest<HTMLElement>("[data-reader-block]");
     const section = target.closest<HTMLElement>("[data-reader-section]");
     const context = (block?.textContent || section?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 800);
-    void lookupWord(word, context, section?.dataset.sectionId || "");
+    void lookupWord(term, context, section?.dataset.sectionId || "");
   }
 
   async function addLookupToWordbook() {
@@ -375,6 +478,10 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
       example: item.example,
       exampleTranslation: item.exampleTranslation,
       sourceSentence: item.sourceSentence,
+      aiDetails: {
+        ...emptyLookupDetails(item.aiExplanation),
+        examples: [item.example, item.exampleTranslation].filter(Boolean),
+      },
       aiEnhanced: Boolean(item.aiExplanation),
     });
   }
@@ -388,21 +495,46 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
     "--reader-line-height": String(lineHeight),
   } as CSSProperties;
   const articleWords = vocabulary.filter((item) => item.sourceId === String(readingResource.id));
+  const unfiledArticles = readableResources.filter((resource) => !resource.readingFolderId);
+  const availableLookupTabs = lookup ? LOOKUP_TABS.filter((tab) => lookup.aiDetails?.[tab.id]?.length) : [];
+  const activeLookupTab = availableLookupTabs.some((tab) => tab.id === lookupTab) ? lookupTab : availableLookupTabs[0]?.id || "context";
+
+  function renderArticleItems(items: ResourceItem[]) {
+    return items.map((resource) => {
+      const ratio = progressMap[resource.id]?.progressRatio || 0;
+      return <div className={`reader-article-item ${resource.id === readingResource.id ? "active" : ""}`} key={resource.id}>
+        <button onClick={() => setReadingResourceId(resource.id)}>
+          <span><strong>{resource.title}</strong><small>{progressLabel(ratio)}</small></span>
+          <i><em style={{ width: `${Math.round(ratio * 100)}%` }} /></i>
+        </button>
+        <select value={resource.readingFolderId || 0} onChange={(event) => void assignArticle(resource.id, Number(event.target.value) || null)} aria-label={`移动文章 ${resource.title}`}>
+          <option value="0">未分类</option>
+          {folders.map((folder) => <option value={folder.id} key={folder.id}>{folder.name}</option>)}
+        </select>
+      </div>;
+    });
+  }
 
   return <div className={`reader-shell ${wordbookOpen ? "wordbook-open" : ""}`}>
     <aside className="panel reader-navigator">
-      <div className="reader-nav-heading"><p className="eyebrow">ARTICLE LIST</p><h2>文章选择</h2></div>
+      <div className="reader-nav-heading"><div><p className="eyebrow">READING SHELF</p><h2>精读书架</h2></div><button onClick={() => setFolderFormOpen((value) => !value)}>{folderFormOpen ? "取消" : "＋ 文件夹"}</button></div>
       <select value={selectedCourseId} onChange={(event) => setSelectedCourseId(Number(event.target.value))} aria-label="选择阅读课程">
         <option value="0">全部文章</option>
         {readingCourses.map((course) => <option value={course.id} key={course.id}>{course.title}</option>)}
       </select>
-      <div className="reader-article-list">
-        {readableResources.map((resource) => {
-          const ratio = progressMap[resource.id]?.progressRatio || 0;
-          return <button className={resource.id === readingResource.id ? "active" : ""} key={resource.id} onClick={() => setReadingResourceId(resource.id)}>
-            <span><strong>{resource.title}</strong><small>{progressLabel(ratio)}</small></span>
-            <i><em style={{ width: `${Math.round(ratio * 100)}%` }} /></i>
-          </button>;
+      {folderFormOpen && <form className="reader-folder-form" onSubmit={(event) => { event.preventDefault(); void createFolder(); }}><input value={newFolderName} onChange={(event) => setNewFolderName(event.target.value)} placeholder="例如：经济学人" maxLength={60} /><button className="button primary">建立</button></form>}
+      <div className="reader-folder-list">
+        <section className={openFolderKey === "unfiled" ? "open" : ""}>
+          <div className="reader-folder-heading"><button onClick={() => setOpenFolderKey((key) => key === "unfiled" ? "" : "unfiled")}><span>{openFolderKey === "unfiled" ? "▾" : "▸"}</span><strong>未分类</strong><em>{unfiledArticles.length}</em></button></div>
+          {openFolderKey === "unfiled" && <div className="reader-article-list">{renderArticleItems(unfiledArticles)}{!unfiledArticles.length && <small className="reader-folder-empty">新导入文章默认放在这里</small>}</div>}
+        </section>
+        {folders.map((folder) => {
+          const key = `folder-${folder.id}`;
+          const items = readableResources.filter((resource) => resource.readingFolderId === folder.id);
+          return <section className={openFolderKey === key ? "open" : ""} key={folder.id}>
+            <div className="reader-folder-heading"><button onClick={() => setOpenFolderKey((current) => current === key ? "" : key)}><span>{openFolderKey === key ? "▾" : "▸"}</span><strong>{folder.name}</strong><em>{items.length}</em></button><button onClick={() => void renameFolder(folder)} aria-label={`重命名 ${folder.name}`}>改</button><button onClick={() => void deleteFolder(folder)} aria-label={`删除 ${folder.name}`}>删</button></div>
+            {openFolderKey === key && <div className="reader-article-list">{renderArticleItems(items)}{!items.length && <small className="reader-folder-empty">可从资源库或未分类中添加文章</small>}</div>}
+          </section>;
         })}
       </div>
       <div className="reader-toc-heading"><p className="eyebrow">OUTLINE</p><h3>章节目录</h3><span>智能排版已保留</span></div>
@@ -430,7 +562,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
         </div>
         <div className="reader-progress-track"><span style={{ width: `${Math.round((selectedProgress?.progressRatio || 0) * 100)}%` }} /></div>
       </header>
-      <div className={`reader-scroll reader-font-${fontFamily} reader-width-${contentWidth}`} style={readerStyle} ref={scrollRef} onScroll={handleScroll} onDoubleClick={handleWordSelection}>
+      <div className={`reader-scroll reader-font-${fontFamily} reader-width-${contentWidth}`} style={readerStyle} ref={scrollRef} role="textbox" aria-label="文章正文，可选择英文单词或短语查询" aria-readonly="true" aria-multiline="true" tabIndex={0} onScroll={handleScroll} onMouseUp={handleWordSelection} onTouchEnd={handleWordSelection} onKeyUp={handleWordSelection}>
         {readerLoading ? <div className="empty-state">正在读取并优化文章排版…</div> : <article className="reader-article">
           {document.sections.map((section) => <section id={section.id} data-reader-section data-section-id={section.id} key={section.id}>
             <h2>{section.title}</h2>
@@ -443,17 +575,17 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
       </div>
     </section>
 
+    {wordbookOpen && <button className="reader-dictionary-backdrop" onClick={() => setWordbookOpen(false)} aria-label="关闭阅读词典" />}
     {wordbookOpen && <aside className="panel reader-dictionary">
-      <div className="reader-dictionary-heading"><div><p className="eyebrow">WORD BOOK</p><h2>阅读词典</h2><p>双击正文单词，自动查询并结合原句解释。</p></div><button onClick={() => setWordbookOpen(false)} aria-label="关闭阅读词典">×</button></div>
+      <div className="reader-dictionary-heading"><div><p className="eyebrow">CONTEXT DICTIONARY</p><h2>随读词典</h2><p>选中正文中的单词或短语，解释只针对当前词项和原句语境。</p></div><button onClick={() => setWordbookOpen(false)} aria-label="关闭阅读词典">×</button></div>
       {lookup ? <div className="reader-word-detail">
-        <div className="reader-word-title"><strong>{lookup.word}</strong><span>{lookup.phonetic}</span>{lookupLoading && <i>查询中…</i>}</div>
-        <section><h3>词典释义</h3><p>{lookup.dictionaryDefinition || "暂未查询到"}</p>{lookup.dictionaryEnglish && <details><summary>查看英文词典原义</summary><p>{lookup.dictionaryEnglish}</p></details>}</section>
-        <section><h3>AI 语境解释</h3><p>{lookup.aiExplanation || "等待生成"}</p></section>
-        {lookup.sourceSentence && <section><h3>文章原句</h3><blockquote>{lookup.sourceSentence}</blockquote></section>}
-        {lookup.example && <section><h3>雅思风格例句</h3><blockquote>{lookup.example}</blockquote>{lookup.exampleTranslation && <p>{lookup.exampleTranslation}</p>}<small>学习用仿写例句，并非真实雅思试题原句。</small></section>}
+        <div className="reader-word-title"><div><strong>{lookup.word}</strong><span>{lookup.phonetic}</span></div><i>{lookupLoading ? "查询中…" : lookup.aiEnhanced ? "AI 已结合本句" : "基础词典结果"}</i></div>
+        <section className="reader-base-dictionary"><h3>词典释义</h3><p>{lookup.dictionaryDefinition || "暂未查询到"}</p>{lookup.dictionaryEnglish && <details><summary>查看英文词典原义</summary><p>{lookup.dictionaryEnglish}</p></details>}</section>
+        <section className="reader-ai-explanation"><div className="reader-ai-heading"><h3>AI 解释</h3><span>解释词或词组，不翻译整篇文章</span></div><div className="reader-ai-tabs">{availableLookupTabs.map((tab) => <button className={activeLookupTab === tab.id ? "active" : ""} key={tab.id} onClick={() => setLookupTab(tab.id)}>{tab.label}</button>)}</div><div className="reader-ai-copy">{(lookup.aiDetails?.[activeLookupTab] || [lookup.aiExplanation]).map((line, index) => <p key={index}>{line}</p>)}</div></section>
+        {lookup.sourceSentence && <section><h3>文章原句 / 当前段落</h3><blockquote>{lookup.sourceSentence}</blockquote></section>}
         <label><span>自己的释义 / 记忆提示</span><textarea value={manualDefinition} onChange={(event) => setManualDefinition(event.target.value)} placeholder="写下你自己的理解、联想或易错点…" /></label>
         <div className="reader-word-actions"><button className="button secondary" disabled={lookupLoading} onClick={() => void lookupWord(lookup.word, lookup.sourceSentence, selectedProgress?.anchor || "")}>重新查询</button><button className="button primary" disabled={lookupLoading} onClick={() => void addLookupToWordbook()}>加入单词本</button></div>
-      </div> : <div className="reader-word-empty"><strong>双击一个英文单词</strong><span>这里会显示词典释义、AI解释、文章原句和雅思风格例句。</span></div>}
+      </div> : <div className="reader-word-empty"><strong>选中一个英文单词或短语</strong><span>这里会显示词典义、当前语境、用法、搭配和相近表达；AI 不会翻译整篇文章。</span></div>}
       <div className="reader-saved-words"><h3>本文生词 · {articleWords.length}</h3>{articleWords.slice(0, 30).map((item) => <button key={item.id} onClick={() => showExistingWord(item)}><strong>{item.word}</strong><small>{item.dictionaryDefinition || item.definition || "等待补充释义"}</small></button>)}</div>
     </aside>}
   </div>;

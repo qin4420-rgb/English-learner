@@ -189,9 +189,9 @@ export default function EnglishHub({ displayName }: { displayName: string }) {
 
         <div className="content-wrap">
           {loading ? <div className="loading-screen"><span className="loader" />正在打开你的学习空间…</div> : <>
-            {view === "desk" && <LearningDesk activeTab={deskTab} onTabChange={setDeskTab} courses={courses} resources={resources} notes={notes} vocabulary={vocabulary} progress={progress} onReloadCourses={loadCourses} onReloadNotes={loadNotes} onReloadVocabulary={loadVocabulary} onReloadProgress={loadProgress} onNotice={setNotice} />}
+            {view === "desk" && <LearningDesk activeTab={deskTab} onTabChange={setDeskTab} courses={courses} resources={resources} notes={notes} vocabulary={vocabulary} progress={progress} onReloadResources={loadResources} onReloadCourses={loadCourses} onReloadNotes={loadNotes} onReloadVocabulary={loadVocabulary} onReloadProgress={loadProgress} onNotice={setNotice} />}
             {view === "tools" && <ToolDirectory resources={resources} importing={importing} onImport={importDirectory} onReload={loadResources} onNotice={setNotice} onToggleFavorite={toggleFavorite} onRemove={removeResource} onReorder={reorderResources} />}
-            {view === "library" && <ResourceLibrary resources={resources} onRead={() => setDeskTab("reading")} onMaintain={() => setView("admin")} onToggleFavorite={toggleFavorite} />}
+            {view === "library" && <ResourceLibrary resources={resources} onRead={(resource) => { window.localStorage.setItem("english-room-reader-resource", String(resource.id)); setDeskTab("reading"); }} onMaintain={() => setView("admin")} onReloadResources={loadResources} onNotice={setNotice} onToggleFavorite={toggleFavorite} />}
             {view === "progress" && <ProgressCenter activities={activities} progress={progress} plans={plans} onReloadActivities={loadActivities} onReloadPlans={loadPlans} onNotice={setNotice} />}
             {view === "admin" && <MaintenanceCenter oneDrive={oneDrive} aiConfigured={aiConfigured} jobs={jobs} uploads={uploads} resources={resources} onReload={refreshAll} onNotice={setNotice} onExport={exportData} />}
           </>}

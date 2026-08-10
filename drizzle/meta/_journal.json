@@ -43,6 +43,13 @@
       "when": 1786355722772,
       "tag": "0005_cold_darkstar",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1786358612839,
+      "tag": "0006_easy_blizzard",
+      "breakpoints": true
     }
   ]
 }

@@ -562,16 +562,32 @@ textarea { min-height: 88px; padding: 10px; resize: vertical; }
 .reader-shell.wordbook-open { grid-template-columns: 250px minmax(0, 1fr) 330px; }
 .reader-navigator, .reader-main, .reader-dictionary { height: min(760px, calc(100vh - 195px)); min-height: 610px; }
 .reader-navigator { padding: 17px 13px; display: flex; flex-direction: column; overflow: hidden; }
+.reader-nav-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.reader-nav-heading > button { margin-top: 2px; padding: 4px 7px; border: 0; border-radius: 6px; background: var(--coral-soft); color: var(--coral-dark); font-size: calc(7px + var(--font-bump)); cursor: pointer; }
 .reader-nav-heading h2, .reader-toc-heading h3 { margin: 2px 0 10px; font-size: calc(16px + var(--font-bump)); }
 .reader-navigator > select { height: 38px; margin-bottom: 10px; font-size: calc(9px + var(--font-bump)); }
-.reader-article-list { max-height: 245px; display: grid; gap: 4px; overflow: auto; }
-.reader-article-list button { padding: 9px 8px; border: 1px solid transparent; border-radius: 8px; background: transparent; text-align: left; cursor: pointer; }
-.reader-article-list button:hover, .reader-article-list button.active { border-color: #ead7cf; background: var(--coral-soft); }
-.reader-article-list button > span { display: flex; justify-content: space-between; gap: 8px; }
+.reader-folder-form { margin: 0 0 9px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px; }
+.reader-folder-form input { min-width: 0; height: 34px; padding: 0 8px; font-size: calc(8px + var(--font-bump)); }
+.reader-folder-form .button { min-height: 34px; padding: 6px 9px; font-size: calc(8px + var(--font-bump)); }
+.reader-folder-list { max-height: 330px; display: grid; align-content: start; gap: 4px; overflow: auto; }
+.reader-folder-list > section { border: 1px solid transparent; border-radius: 8px; }
+.reader-folder-list > section.open { border-color: #ebe5da; background: #fbfaf6; }
+.reader-folder-heading { min-height: 34px; display: flex; align-items: center; }
+.reader-folder-heading > button:first-child { min-width: 0; padding: 8px 7px; border: 0; background: transparent; flex: 1; display: grid; grid-template-columns: 13px minmax(0, 1fr) auto; gap: 5px; align-items: center; color: var(--ink); text-align: left; cursor: pointer; }
+.reader-folder-heading > button:not(:first-child) { padding: 4px; border: 0; background: transparent; color: #99988f; font-size: calc(7px + var(--font-bump)); cursor: pointer; }
+.reader-folder-heading strong { overflow: hidden; font-size: calc(9px + var(--font-bump)); text-overflow: ellipsis; white-space: nowrap; }
+.reader-folder-heading em { color: var(--muted); font-size: calc(7px + var(--font-bump)); font-style: normal; }
+.reader-article-list { max-height: 210px; padding: 0 4px 5px; display: grid; gap: 4px; overflow: auto; }
+.reader-article-item { min-width: 0; border: 1px solid transparent; border-radius: 8px; background: white; overflow: hidden; }
+.reader-article-item:hover, .reader-article-item.active { border-color: #ead7cf; background: var(--coral-soft); }
+.reader-article-item > button { width: 100%; padding: 8px 7px 5px; border: 0; background: transparent; text-align: left; cursor: pointer; }
+.reader-article-item > button > span { display: flex; justify-content: space-between; gap: 8px; }
+.reader-article-item > select { width: calc(100% - 14px); height: 27px; margin: 0 7px 7px; padding: 0 22px 0 6px; border-color: #e5ded3; background-color: rgba(255,255,255,.8); color: var(--muted); font-size: calc(7px + var(--font-bump)); }
 .reader-article-list strong { min-width: 0; overflow: hidden; color: var(--ink); font-size: calc(9px + var(--font-bump)); text-overflow: ellipsis; white-space: nowrap; }
 .reader-article-list small { flex: 0 0 auto; color: var(--muted); font-size: calc(7px + var(--font-bump)); }
 .reader-article-list i { height: 3px; margin-top: 7px; border-radius: 5px; display: block; overflow: hidden; background: #e9e5dc; }
 .reader-article-list i em { height: 100%; display: block; background: var(--coral); }
+.reader-folder-empty { padding: 8px 7px 10px; color: var(--muted); font-size: calc(7px + var(--font-bump)); line-height: 1.5; }
 .reader-toc-heading { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
 .reader-toc-heading h3 { margin-bottom: 3px; }
 .reader-toc-heading > span { color: var(--green); font-size: calc(7px + var(--font-bump)); }
@@ -616,6 +632,7 @@ textarea { min-height: 88px; padding: 10px; resize: vertical; }
 .reader-translation { padding: .8em 1em; border-radius: 8px; background: #f7f5ef; color: #646059; font-family: Inter, Arial, "PingFang SC", sans-serif; font-size: .82em; line-height: 1.85; }
 .reader-translation p:last-child { margin-bottom: 0; }
 .reader-dictionary { padding: 18px; overflow: auto; }
+.reader-dictionary-backdrop { display: none; }
 .reader-dictionary-heading { padding-bottom: 13px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 12px; }
 .reader-dictionary-heading h2 { margin: 2px 0; font-size: calc(17px + var(--font-bump)); }
 .reader-dictionary-heading p:last-child { margin: 0; color: var(--muted); font-size: calc(8px + var(--font-bump)); line-height: 1.5; }
@@ -624,16 +641,26 @@ textarea { min-height: 88px; padding: 10px; resize: vertical; }
 .reader-word-empty strong { color: var(--ink); font-size: calc(11px + var(--font-bump)); }
 .reader-word-empty span { max-width: 240px; font-size: calc(8px + var(--font-bump)); line-height: 1.6; }
 .reader-word-detail { padding-top: 15px; }
-.reader-word-title { margin-bottom: 13px; display: flex; align-items: baseline; gap: 9px; }
+.reader-word-title { margin-bottom: 13px; display: flex; align-items: flex-start; justify-content: space-between; gap: 9px; }
+.reader-word-title > div { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 9px; }
 .reader-word-title strong { font-family: Georgia, serif; font-size: calc(25px + var(--font-bump)); }
 .reader-word-title span { color: var(--muted); font-size: calc(9px + var(--font-bump)); }
-.reader-word-title i { margin-left: auto; color: var(--coral); font-size: calc(7px + var(--font-bump)); font-style: normal; }
+.reader-word-title i { flex: 0 0 auto; color: var(--coral); font-size: calc(7px + var(--font-bump)); font-style: normal; }
 .reader-word-detail > section { margin: 0 0 10px; padding: 11px 12px; border-radius: 9px; background: #faf8f3; }
 .reader-word-detail h3 { margin: 0 0 6px; color: var(--coral-dark); font-size: calc(8px + var(--font-bump)); }
 .reader-word-detail p, .reader-word-detail blockquote { margin: 0; color: #5b5d58; font-size: calc(9px + var(--font-bump)); line-height: 1.65; white-space: pre-line; }
 .reader-word-detail blockquote { padding-left: 9px; border-left: 2px solid #e6c2b8; font-family: Georgia, serif; }
 .reader-word-detail section small { display: block; margin-top: 6px; color: var(--muted); font-size: calc(7px + var(--font-bump)); }
 .reader-word-detail details { margin-top: 8px; color: var(--muted); font-size: calc(8px + var(--font-bump)); }
+.reader-word-detail > .reader-ai-explanation { padding: 0; overflow: hidden; background: white; border: 1px solid var(--line); }
+.reader-ai-heading { padding: 10px 12px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 8px; background: #f5f5f3; }
+.reader-ai-heading h3 { margin: 0; color: var(--ink); }
+.reader-ai-heading span { color: var(--muted); font-size: calc(6px + var(--font-bump)); }
+.reader-ai-tabs { padding: 10px 10px 4px; display: flex; flex-wrap: wrap; gap: 6px; }
+.reader-ai-tabs button { padding: 6px 9px; border: 0; border-radius: 999px; background: #f2f3f2; color: #8a8d89; font-size: calc(7px + var(--font-bump)); cursor: pointer; }
+.reader-ai-tabs button.active { background: var(--blue); color: white; font-weight: 750; }
+.reader-ai-copy { min-height: 72px; padding: 9px 12px 13px; }
+.reader-ai-copy p + p { margin-top: 8px; }
 .reader-word-detail label { display: grid; gap: 6px; color: var(--muted); font-size: calc(8px + var(--font-bump)); }
 .reader-word-detail textarea { min-height: 76px; }
 .reader-word-actions { margin-top: 9px; display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
@@ -643,6 +670,9 @@ textarea { min-height: 88px; padding: 10px; resize: vertical; }
 .reader-saved-words strong, .reader-saved-words small { display: block; }
 .reader-saved-words strong { font-family: Georgia, serif; font-size: calc(11px + var(--font-bump)); }
 .reader-saved-words small { margin-top: 3px; overflow: hidden; color: var(--muted); font-size: calc(8px + var(--font-bump)); text-overflow: ellipsis; white-space: nowrap; }
+.library-folder-select { display: grid; gap: 3px; }
+.library-folder-select span { color: var(--muted); font-size: calc(7px + var(--font-bump)); }
+.library-folder-select select { min-width: 130px; height: 32px; padding: 0 25px 0 8px; font-size: calc(8px + var(--font-bump)); }
 
 @media (min-width: 1201px) and (max-width: 1500px) {
   .reader-shell { grid-template-columns: 200px minmax(0, 1fr); }
@@ -753,7 +783,9 @@ textarea { min-height: 88px; padding: 10px; resize: vertical; }
   .reader-shell, .reader-shell.wordbook-open { grid-template-columns: 1fr; }
   .reader-navigator { height: auto; min-height: 0; max-height: 390px; }
   .reader-main { height: calc(100vh - 130px); min-height: 560px; }
-  .reader-dictionary { grid-column: auto; max-height: none; }
+  .reader-dictionary-backdrop { position: fixed; inset: 0; z-index: 79; border: 0; background: rgba(22,24,22,.36); display: block; }
+  .reader-dictionary { position: fixed; inset: auto 0 0 0; z-index: 80; grid-column: auto; width: 100%; height: auto; min-height: 300px; max-height: min(74vh, 720px); padding: 18px 17px calc(22px + env(safe-area-inset-bottom)); border-radius: 22px 22px 0 0; box-shadow: 0 -24px 70px rgba(24,25,23,.22); }
+  .reader-folder-list { max-height: 190px; }
   .reader-article-list { max-height: 155px; }
   .reader-toc { max-height: 130px; }
   .reader-scroll { padding: 27px 18px 80px; }

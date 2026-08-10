@@ -49,6 +49,7 @@ function mapResource(row: Record<string, unknown>) {
     issueDate: String(row.issue_date ?? ""),
     articleOrder: Number(row.article_order ?? 0),
     parentId: row.parent_id ? Number(row.parent_id) : null,
+    readingFolderId: row.reading_folder_id ? Number(row.reading_folder_id) : null,
     metadataJson: String(row.metadata_json ?? "{}"),
     status: String(row.status ?? "active"),
     sortOrder: Number(row.sort_order ?? 0),
