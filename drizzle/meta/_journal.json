@@ -1,0 +1,48 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1786342760385,
+      "tag": "0000_flowery_thor",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1786345328396,
+      "tag": "0001_normal_grey_gargoyle",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1786349639903,
+      "tag": "0002_pink_frog_thor",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1786349869754,
+      "tag": "0003_nostalgic_butterfly",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1786353302715,
+      "tag": "0004_unique_mockingbird",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1786355722772,
+      "tag": "0005_cold_darkstar",
+      "breakpoints": true
+    }
+  ]
+}

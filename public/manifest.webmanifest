@@ -1,0 +1,13 @@
+{
+  "name": "English Room｜私人英语学习空间",
+  "short_name": "English Room",
+  "description": "新概念英语课程、学习进度与资源库",
+  "start_url": "/#dashboard",
+  "display": "standalone",
+  "background_color": "#f6f4ef",
+  "theme_color": "#282d27",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
+
