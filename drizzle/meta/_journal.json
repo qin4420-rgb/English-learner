@@ -50,6 +50,13 @@
       "when": 1786358612839,
       "tag": "0006_easy_blizzard",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1786372451952,
+      "tag": "0007_unusual_dust",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,4 @@
-import { getRuntimeBindings, jsonError } from "@/app/api/_lib/runtime";
+import { ensureDatabase, getDatabase, getOwnerId, getRuntimeBindings, jsonError } from "@/app/api/_lib/runtime";
 
 type DictionaryEntry = {
   phonetic?: string;
@@ -36,6 +36,8 @@ function normalizeTerm(value: string) {
 
 export async function POST(request: Request) {
   try {
+    await ensureDatabase();
+    const ownerId = await getOwnerId();
     const body = await request.json() as { word?: string; context?: string };
     const term = normalizeTerm(String(body.word || ""));
     if (!term) return jsonError(new Error("请选择一个有效的英文单词或短语（最多 8 个词）"), 400);
@@ -45,7 +47,17 @@ export async function POST(request: Request) {
     let phonetic = "";
     let dictionaryDefinition = "";
     let dictionaryExample = "";
+    let dictionarySource = "";
     if (isSingleWord) {
+      const local = await getDatabase().prepare(`SELECT e.*,s.name AS source_name FROM dictionary_entries e JOIN dictionary_sources s ON s.id=e.source_id WHERE s.owner_id=? AND s.enabled=1 AND e.headword=? ORDER BY s.sort_order,s.id LIMIT 1`).bind(ownerId, term).first<Record<string, unknown>>();
+      if (local) {
+        phonetic = String(local.phonetic || "");
+        dictionaryDefinition = [local.part_of_speech ? `${local.part_of_speech}.` : "", local.definition, local.definition_en].filter(Boolean).join(" ").trim();
+        dictionaryExample = String(local.example || "");
+        dictionarySource = String(local.source_name || "本地词典");
+      }
+    }
+    if (isSingleWord && !dictionaryDefinition) {
       try {
         const response = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(term)}`, {
           headers: { accept: "application/json" },
@@ -63,6 +75,7 @@ export async function POST(request: Request) {
           ).filter((item) => item.definition).slice(0, 5);
           dictionaryDefinition = definitions.map((item) => `${item.part ? `${item.part}. ` : ""}${item.definition}`).join("\n");
           dictionaryExample = definitions.find((item) => item.example)?.example || "";
+          dictionarySource = "在线基础词典";
         }
       } catch {
         // AI contextual explanation remains available when the public dictionary is unavailable.
@@ -132,6 +145,7 @@ dictionaryTranslation 为简洁中文词性和义项；contextMeaning 为当前�
         derivedForms: stringList(ai.derivedForms),
       },
       aiEnhanced: Boolean(bindings.DEEPSEEK_API_KEY && ai.contextMeaning),
+      dictionarySource,
     });
   } catch (error) {
     return jsonError(error);

@@ -13,10 +13,16 @@ export type RuntimeBindings = {
   AI_PROVIDER?: string;
   OCR_PROVIDER?: string;
   OCR_ENDPOINT?: string;
+  OCR_API_KEY?: string;
   STT_PROVIDER?: string;
   STT_ENDPOINT?: string;
+  STT_API_KEY?: string;
   PRONUNCIATION_PROVIDER?: string;
   PRONUNCIATION_ENDPOINT?: string;
+  PRONUNCIATION_API_KEY?: string;
+  TTS_PROVIDER?: string;
+  TTS_ENDPOINT?: string;
+  TTS_API_KEY?: string;
 };
 
 let initialized: Promise<void> | null = null;
@@ -256,6 +262,43 @@ export async function ensureDatabase(): Promise<void> {
         reviewed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
       )`),
       database.prepare("CREATE INDEX IF NOT EXISTS idx_vocabulary_reviews_owner_word ON vocabulary_reviews(owner_id,vocabulary_id,reviewed_at)"),
+      database.prepare(`CREATE TABLE IF NOT EXISTS vocabulary_occurrences (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_id TEXT NOT NULL,
+        vocabulary_id INTEGER NOT NULL,
+        resource_id INTEGER,
+        source_type TEXT NOT NULL DEFAULT 'manual',
+        source_title TEXT NOT NULL DEFAULT '',
+        source_anchor TEXT NOT NULL DEFAULT '',
+        source_sentence TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`),
+      database.prepare("CREATE INDEX IF NOT EXISTS idx_vocabulary_occurrences_owner_word ON vocabulary_occurrences(owner_id,vocabulary_id,created_at)"),
+      database.prepare("CREATE INDEX IF NOT EXISTS idx_vocabulary_occurrences_owner_resource ON vocabulary_occurrences(owner_id,resource_id)"),
+      database.prepare(`CREATE TABLE IF NOT EXISTS dictionary_sources (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_id TEXT NOT NULL,
+        resource_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`),
+      database.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_dictionary_sources_owner_resource ON dictionary_sources(owner_id,resource_id)"),
+      database.prepare("CREATE INDEX IF NOT EXISTS idx_dictionary_sources_owner_sort ON dictionary_sources(owner_id,enabled,sort_order)"),
+      database.prepare(`CREATE TABLE IF NOT EXISTS dictionary_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id INTEGER NOT NULL,
+        headword TEXT NOT NULL,
+        phonetic TEXT NOT NULL DEFAULT '',
+        part_of_speech TEXT NOT NULL DEFAULT '',
+        definition TEXT NOT NULL DEFAULT '',
+        definition_en TEXT NOT NULL DEFAULT '',
+        example TEXT NOT NULL DEFAULT '',
+        extra_json TEXT NOT NULL DEFAULT '{}'
+      )`),
+      database.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_dictionary_entries_source_headword ON dictionary_entries(source_id,headword)"),
+      database.prepare("CREATE INDEX IF NOT EXISTS idx_dictionary_entries_headword ON dictionary_entries(headword)"),
       database.prepare(`CREATE TABLE IF NOT EXISTS learning_activities (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         owner_id TEXT NOT NULL,

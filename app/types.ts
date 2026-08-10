@@ -1,3 +1,5 @@
+import type { LearningUse, ResourceType } from "./resource-model";
+
 export type ResourceItem = {
   id: number;
   title: string;
@@ -5,7 +7,9 @@ export type ResourceItem = {
   category: string;
   level: string;
   skills: string;
-  resourceType: string;
+  resourceType: ResourceType;
+  learningUses: LearningUse[];
+  tags: string[];
   url: string;
   sourceName: string;
   sourceUrl: string;
@@ -33,6 +37,7 @@ export type ReadingFolderItem = {
   name: string;
   sortOrder: number;
   articleCount: number;
+  resourceCount: number;
   createdAt: string;
   updatedAt: string;
 };
@@ -142,6 +147,29 @@ export type VocabularyItem = {
   fsrsLapses: number;
   fsrsLastReviewAt: string;
   createdAt: string;
+  occurrenceCount: number;
+  occurrenceSources: string[];
+};
+
+export type VocabularyOccurrenceItem = {
+  id: number;
+  vocabularyId: number;
+  resourceId: number | null;
+  sourceType: string;
+  sourceTitle: string;
+  sourceAnchor: string;
+  sourceSentence: string;
+  createdAt: string;
+};
+
+export type DictionarySourceItem = {
+  id: number;
+  resourceId: number;
+  name: string;
+  enabled: boolean;
+  sortOrder: number;
+  entryCount: number;
+  createdAt: string;
 };
 
 export type ActivityItem = {
@@ -200,7 +228,7 @@ export type MediaProgressSnapshot = {
 };
 
 export type ProviderStatus = {
-  id: "ai" | "ocr" | "stt" | "pronunciation";
+  id: "ai" | "ocr" | "stt" | "pronunciation" | "tts";
   label: string;
   provider: string;
   configured: boolean;

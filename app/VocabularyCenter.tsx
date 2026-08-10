@@ -1,7 +1,7 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
-import type { VocabularyItem } from "./types";
+import type { VocabularyItem, VocabularyOccurrenceItem } from "./types";
 
 type Props = {
   vocabulary: VocabularyItem[];
@@ -30,8 +30,28 @@ export default function VocabularyCenter({ vocabulary, onReload, onNotice }: Pro
   const [busy, setBusy] = useState(false);
   const [search, setSearch] = useState("");
   const [reviewNow, setReviewNow] = useState(() => Date.now());
-  const dueWords = useMemo(() => vocabulary.filter((item) => !item.mastered && (!item.nextReviewAt || new Date(item.nextReviewAt.replace(" ", "T")).getTime() <= reviewNow)), [reviewNow, vocabulary]);
-  const reviewCard = dueWords[0];
+  const [masteryChecksDone, setMasteryChecksDone] = useState<number[]>([]);
+  const [detail, setDetail] = useState<VocabularyItem | null>(null);
+  const [detailData, setDetailData] = useState<{ occurrences: VocabularyOccurrenceItem[]; reviews: Record<string, unknown>[] } | null>(null);
+  const reviewQueue = useMemo(() => {
+    const due = vocabulary.filter((item) => !item.mastered && item.fsrsReps > 0 && (!item.nextReviewAt || new Date(item.nextReviewAt.replace(" ", "T")).getTime() <= reviewNow));
+    const fresh = vocabulary.filter((item) => !item.mastered && item.fsrsReps === 0);
+    const queue: VocabularyItem[] = [];
+    let dueIndex = 0; let freshIndex = 0;
+    while (dueIndex < due.length || freshIndex < fresh.length) {
+      if (dueIndex < due.length) queue.push(due[dueIndex++]);
+      if (dueIndex < due.length) queue.push(due[dueIndex++]);
+      if (freshIndex < fresh.length) queue.push(fresh[freshIndex++]);
+    }
+    const mastered = vocabulary.filter((item) => item.mastered && !masteryChecksDone.includes(item.id));
+    if (mastered.length && queue.length) {
+      const sample = mastered[Math.floor(new Date(reviewNow).getDate() / 2) % mastered.length];
+      queue.splice(Math.min(19, queue.length), 0, sample);
+    } else if (mastered.length && !queue.length) queue.push(mastered[Math.floor(new Date(reviewNow).getDate() / 2) % mastered.length]);
+    return queue;
+  }, [masteryChecksDone, reviewNow, vocabulary]);
+  const dueWords = reviewQueue.filter((item) => !item.mastered);
+  const reviewCard = reviewQueue[0];
   const visibleWords = vocabulary.filter((item) => `${item.word} ${item.definition} ${item.dictionaryDefinition} ${item.aiExplanation} ${item.tags}`.toLowerCase().includes(search.trim().toLowerCase()));
 
   async function addWord(event: FormEvent) {
@@ -59,15 +79,21 @@ export default function VocabularyCenter({ vocabulary, onReload, onNotice }: Pro
     if (!reviewCard) return;
     setBusy(true);
     try {
-      const result = await jsonRequest<{ nextReviewAt: string }>("/api/vocabulary/review", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: reviewCard.id, rating }) });
+      const result = await jsonRequest<{ nextReviewAt: string }>("/api/vocabulary/review", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: reviewCard.id, rating, masteryCheck: reviewCard.mastered }) });
       const completedAt = Date.now();
+      if (reviewCard.mastered) setMasteryChecksDone((current) => [...new Set([...current, reviewCard.id])]);
       setReviewNow(completedAt); setRevealed(false); await onReload(); onNotice(`${reviewCard.word} 已按FSRS排到 ${dueText(result.nextReviewAt, completedAt)}`);
     } catch (error) { onNotice((error as Error).message); } finally { setBusy(false); }
   }
 
-  async function togglePaused(item: VocabularyItem) {
+  async function toggleMastered(item: VocabularyItem) {
     await jsonRequest("/api/vocabulary", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: item.id, mastered: !item.mastered }) });
     await onReload();
+  }
+
+  async function openDetail(item: VocabularyItem) {
+    setDetail(item); setDetailData(null);
+    try { setDetailData(await jsonRequest(`/api/vocabulary/${item.id}`)); } catch (error) { onNotice((error as Error).message); }
   }
 
   async function removeWord(item: VocabularyItem) {
@@ -84,12 +110,12 @@ export default function VocabularyCenter({ vocabulary, onReload, onNotice }: Pro
 
   return (
     <section>
-      <div className="page-heading vocabulary-heading"><div><p className="eyebrow">FSRS VOCABULARY</p><h1>我的单词本</h1><p>新词和外部词表进入同一个FSRS队列；根据“忘记、困难、认识、简单”自动安排下一次复习。</p></div><div className="vocabulary-summary"><span><strong>{dueWords.length}</strong> 今日待复习</span><span><strong>{vocabulary.length}</strong> 单词总数</span></div></div>
+      <div className="page-heading vocabulary-heading"><div><p className="eyebrow">FSRS VOCABULARY 2.0</p><h1>我的单词本</h1><p>到期词与新词混合学习；已掌握词会按约每 20 张抽查一次，答错会自动回到FSRS队列。</p></div><div className="vocabulary-summary"><span><strong>{dueWords.length}</strong> 新词 / 待复习</span><span><strong>{vocabulary.filter((item) => item.mastered).length}</strong> 已掌握</span><span><strong>{vocabulary.length}</strong> 总数</span></div></div>
 
       <div className="vocabulary-workspace">
         <section className="panel review-panel">
           <div className="panel-heading"><div><p className="eyebrow">TODAY REVIEW</p><h2>FSRS 今日复习</h2><p>先回忆再显示答案，最后如实评分。</p></div><span className="count-badge">剩余 {dueWords.length}</span></div>
-          {reviewCard ? <div className="review-card"><small>{reviewCard.tags || "英语词汇"}</small><h3>{reviewCard.word}</h3><span>{reviewCard.phonetic}</span>{revealed ? <div className="review-answer"><strong>{reviewCard.definition || reviewCard.dictionaryDefinition || reviewCard.aiExplanation || "尚未填写释义"}</strong>{reviewCard.sourceSentence ? <blockquote><small>文章原句</small>{reviewCard.sourceSentence}</blockquote> : reviewCard.example && <blockquote>{reviewCard.example}</blockquote>}<div className="rating-grid"><button disabled={busy} onClick={() => void review(1)}><b>忘记</b><small>Again</small></button><button disabled={busy} onClick={() => void review(2)}><b>困难</b><small>Hard</small></button><button disabled={busy} onClick={() => void review(3)}><b>认识</b><small>Good</small></button><button disabled={busy} onClick={() => void review(4)}><b>简单</b><small>Easy</small></button></div></div> : <button className="button primary reveal-button" onClick={() => setRevealed(true)}>显示答案</button>}</div> : <div className="empty-state review-empty"><strong>今天的复习完成了</strong><span>未来到期的单词仍会按FSRS日期保留。</span></div>}
+          {reviewCard ? <div className="review-card"><small>{reviewCard.mastered ? "已掌握抽查" : reviewCard.fsrsReps === 0 ? "新词" : reviewCard.tags || "到期复习"}</small><h3>{reviewCard.word}</h3><span>{reviewCard.phonetic}</span>{revealed ? <div className="review-answer"><strong>{reviewCard.definition || reviewCard.dictionaryDefinition || reviewCard.aiExplanation || "尚未填写释义"}</strong>{reviewCard.sourceSentence ? <blockquote><small>文章原句</small>{reviewCard.sourceSentence}</blockquote> : reviewCard.example && <blockquote>{reviewCard.example}</blockquote>}<div className="rating-grid"><button disabled={busy} onClick={() => void review(1)}><b>忘记</b><small>Again</small></button><button disabled={busy} onClick={() => void review(2)}><b>困难</b><small>Hard</small></button><button disabled={busy} onClick={() => void review(3)}><b>认识</b><small>Good</small></button><button disabled={busy} onClick={() => void review(4)}><b>简单</b><small>Easy</small></button></div>{reviewCard.mastered && <small>抽查评分为“忘记/困难”会取消已掌握状态。</small>}</div> : <button className="button primary reveal-button" onClick={() => setRevealed(true)}>显示答案</button>}</div> : <div className="empty-state review-empty"><strong>今天的复习完成了</strong><span>未来到期的单词仍会按FSRS日期保留。</span></div>}
         </section>
 
         <aside className="panel vocabulary-import-panel">
@@ -102,7 +128,8 @@ export default function VocabularyCenter({ vocabulary, onReload, onNotice }: Pro
 
       <form className="panel vocabulary-add" onSubmit={addWord}><input required value={manualWord} onChange={(event) => setManualWord(event.target.value)} placeholder="输入一个新单词" /><input value={manualDefinition} onChange={(event) => setManualDefinition(event.target.value)} placeholder="中文释义或自己的理解" /><button className="button primary">加入复习</button></form>
       <div className="vocabulary-list-toolbar"><h2>全部单词</h2><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索单词、释义或标签…" aria-label="搜索单词本" /></div>
-      <div className="vocabulary-grid">{visibleWords.map((item) => <article className={`panel vocabulary-card ${item.mastered ? "mastered" : ""}`} key={item.id}><div><strong>{item.word}</strong><span>{item.phonetic}</span></div><p>{item.definition || item.dictionaryDefinition || item.aiExplanation || "等待补充释义"}</p>{(item.aiExplanation || item.sourceSentence || item.example) && <details className="word-card-details"><summary>查看语境与例句</summary>{item.aiExplanation && <p><b>AI解释：</b>{item.aiExplanation}</p>}{item.sourceSentence && <blockquote><small>文章原句</small>{item.sourceSentence}</blockquote>}{item.example && <blockquote><small>雅思风格例句</small>{item.example}{item.exampleTranslation && <em>{item.exampleTranslation}</em>}</blockquote>}</details>}<div className="fsrs-meta"><span>{item.mastered ? "已暂停" : dueText(item.nextReviewAt, reviewNow)}</span><span>复习 {item.reviewCount} 次</span><span>稳定度 {item.fsrsStability ? item.fsrsStability.toFixed(1) : "—"}</span></div><div className="vocabulary-card-footer"><small>{item.sourceType === "resource" ? `来自文章 #${item.sourceId}` : item.sourceType === "import" ? "外部词表" : "手工添加"}</small><div><button onClick={() => void togglePaused(item)}>{item.mastered ? "恢复" : "暂停"}</button><button className="delete-word" onClick={() => void removeWord(item)}>删除</button></div></div></article>)}{!visibleWords.length && <div className="panel empty-state wide">没有匹配的单词。</div>}</div>
+      <div className="vocabulary-grid">{visibleWords.map((item) => <article className={`panel vocabulary-card ${item.mastered ? "mastered" : ""}`} key={item.id}><button className="word-card-open" onClick={() => void openDetail(item)}><div><strong>{item.word}</strong><span>{item.phonetic}</span></div><p>{item.definition || item.dictionaryDefinition || item.aiExplanation || "等待补充释义"}</p></button><div className="fsrs-meta"><span>{item.mastered ? "已掌握" : item.fsrsReps === 0 ? "新词" : dueText(item.nextReviewAt, reviewNow)}</span><span>出现 {item.occurrenceCount || 1} 次</span><span>复习 {item.reviewCount} 次</span></div><div className="vocabulary-card-footer"><small>{item.occurrenceSources.slice(0, 2).join(" · ") || (item.sourceType === "import" ? "外部词表" : "手工添加")}</small><div><button onClick={() => void toggleMastered(item)}>{item.mastered ? "取消掌握" : "标记掌握"}</button><button className="delete-word" onClick={() => void removeWord(item)}>删除</button></div></div></article>)}{!visibleWords.length && <div className="panel empty-state wide">没有匹配的单词。</div>}</div>
+      {detail && <div className="modal-layer" role="dialog" aria-modal="true" aria-label="单词详情"><div className="panel word-detail-modal"><header><div><p className="eyebrow">WORD DETAIL</p><h2>{detail.word} <small>{detail.phonetic}</small></h2></div><button onClick={() => setDetail(null)}>×</button></header><nav className="word-detail-sections"><section><h3>词典与AI解释</h3><p>{detail.dictionaryDefinition || detail.definition || "暂无词典释义"}</p>{detail.aiExplanation && <p><b>AI语境解释：</b>{detail.aiExplanation}</p>}</section><section><h3>语境</h3>{detailData?.occurrences.map((item) => <article key={item.id}><strong>{item.sourceTitle || item.sourceType}</strong><blockquote>{item.sourceSentence || "未保存原句"}</blockquote></article>)}{detailData && !detailData.occurrences.length && <p>尚无来源语境。</p>}</section><section><h3>来源</h3><p>{detail.occurrenceCount} 次记录 · {detail.occurrenceSources.join(" / ") || "手工添加"}</p></section><section><h3>复习记录</h3><p>累计 {detail.reviewCount} 次 · 遗忘 {detail.fsrsLapses} 次 · 稳定度 {detail.fsrsStability.toFixed(1)}</p><small>已保存 {detailData?.reviews.length || 0} 条FSRS评分记录。</small></section></nav></div></div>}
     </section>
   );
 }

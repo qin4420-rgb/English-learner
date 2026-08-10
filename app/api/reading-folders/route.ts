@@ -5,7 +5,8 @@ function mapFolder(row: Record<string, unknown>) {
     id: Number(row.id),
     name: String(row.name),
     sortOrder: Number(row.sort_order ?? 0),
-    articleCount: Number(row.article_count ?? 0),
+    articleCount: Number(row.resource_count ?? 0),
+    resourceCount: Number(row.resource_count ?? 0),
     createdAt: String(row.created_at ?? ""),
     updatedAt: String(row.updated_at ?? ""),
   };
@@ -15,13 +16,13 @@ export async function GET() {
   try {
     await ensureDatabase();
     const ownerId = await getOwnerId();
-    const result = await getDatabase().prepare(`SELECT f.*, COUNT(r.id) AS article_count
+    const result = await getDatabase().prepare(`SELECT f.*, COUNT(r.id) AS resource_count
       FROM reading_folders f
       LEFT JOIN resources r
         ON r.owner_id=f.owner_id
         AND r.reading_folder_id=f.id
         AND r.collection='library'
-        AND r.markdown_object_key!=''
+        AND r.status!='archived'
       WHERE f.owner_id=?
       GROUP BY f.id
       ORDER BY f.sort_order,f.created_at,f.id`).bind(ownerId).all();
@@ -52,17 +53,19 @@ export async function PATCH(request: Request) {
   try {
     await ensureDatabase();
     const ownerId = await getOwnerId();
-    const body = await request.json() as { id?: number; name?: string; resourceId?: number; folderId?: number | null };
+    const body = await request.json() as { id?: number; name?: string; resourceId?: number; resourceIds?: number[]; folderId?: number | null };
 
-    if (body.resourceId) {
+    if (body.resourceId || body.resourceIds?.length) {
       const folderId = body.folderId ? Number(body.folderId) : null;
       if (folderId) {
         const folder = await getDatabase().prepare("SELECT id FROM reading_folders WHERE id=? AND owner_id=?").bind(folderId, ownerId).first();
         if (!folder) return jsonError(new Error("目标文件夹不存在"), 404);
       }
-      const resource = await getDatabase().prepare("SELECT id FROM resources WHERE id=? AND owner_id=? AND collection='library'").bind(body.resourceId, ownerId).first();
-      if (!resource) return jsonError(new Error("文章不存在"), 404);
-      await getDatabase().prepare("UPDATE resources SET reading_folder_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(folderId, body.resourceId, ownerId).run();
+      const resourceIds = [...new Set([body.resourceId, ...(body.resourceIds || [])].filter((id): id is number => Boolean(id && Number.isInteger(id))))];
+      if (!resourceIds.length || resourceIds.length > 500) return jsonError(new Error("请选择资源"), 400);
+      const placeholders = resourceIds.map(() => "?").join(",");
+      const result = await getDatabase().prepare(`UPDATE resources SET reading_folder_id=?,updated_at=CURRENT_TIMESTAMP WHERE owner_id=? AND collection='library' AND id IN (${placeholders})`).bind(folderId, ownerId, ...resourceIds).run();
+      if (!result.meta.changes) return jsonError(new Error("资源不存在"), 404);
       return Response.json({ ok: true });
     }
 

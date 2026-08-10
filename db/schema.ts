@@ -312,6 +312,61 @@ export const vocabularyReviews = sqliteTable(
   ],
 );
 
+export const vocabularyOccurrences = sqliteTable(
+  "vocabulary_occurrences",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    ownerId: text("owner_id").notNull(),
+    vocabularyId: integer("vocabulary_id").notNull(),
+    resourceId: integer("resource_id"),
+    sourceType: text("source_type").notNull().default("manual"),
+    sourceTitle: text("source_title").notNull().default(""),
+    sourceAnchor: text("source_anchor").notNull().default(""),
+    sourceSentence: text("source_sentence").notNull().default(""),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("idx_vocabulary_occurrences_owner_word").on(table.ownerId, table.vocabularyId, table.createdAt),
+    index("idx_vocabulary_occurrences_owner_resource").on(table.ownerId, table.resourceId),
+  ],
+);
+
+export const dictionarySources = sqliteTable(
+  "dictionary_sources",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    ownerId: text("owner_id").notNull(),
+    resourceId: integer("resource_id").notNull(),
+    name: text("name").notNull(),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("idx_dictionary_sources_owner_resource").on(table.ownerId, table.resourceId),
+    index("idx_dictionary_sources_owner_sort").on(table.ownerId, table.enabled, table.sortOrder),
+  ],
+);
+
+export const dictionaryEntries = sqliteTable(
+  "dictionary_entries",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    sourceId: integer("source_id").notNull(),
+    headword: text("headword").notNull(),
+    phonetic: text("phonetic").notNull().default(""),
+    partOfSpeech: text("part_of_speech").notNull().default(""),
+    definition: text("definition").notNull().default(""),
+    definitionEn: text("definition_en").notNull().default(""),
+    example: text("example").notNull().default(""),
+    extraJson: text("extra_json").notNull().default("{}"),
+  },
+  (table) => [
+    uniqueIndex("idx_dictionary_entries_source_headword").on(table.sourceId, table.headword),
+    index("idx_dictionary_entries_headword").on(table.headword),
+  ],
+);
+
 export const learningActivities = sqliteTable(
   "learning_activities",
   {

@@ -197,7 +197,7 @@ function applyReaderFocusMode(enabled: boolean) {
 
 export default function ArticleReader({ courses, resources, vocabulary, onReloadResources, onReloadVocabulary, onReloadNotes, onNotice }: Props) {
   const readingCourses = useMemo(() => courses.filter((course) => course.status !== "hidden" && course.courseType === "reading"), [courses]);
-  const articles = useMemo(() => resources.filter((resource) => resource.collection === "library" && resource.markdownObjectKey), [resources]);
+  const articles = useMemo(() => resources.filter((resource) => resource.collection === "library" && resource.markdownObjectKey && !["hidden", "archived"].includes(resource.status) && resource.learningUses.includes("Reading")), [resources]);
   const [selectedCourseId, setSelectedCourseId] = useState(0);
   const [readingResourceId, setReadingResourceId] = useState(0);
   const [progressMap, setProgressMap] = useState<Record<number, ReadingProgressItem>>({});
@@ -228,6 +228,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
   const scrollRef = useRef<HTMLDivElement>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const restoredResourceRef = useRef(0);
+  const modeSwitchProgressRef = useRef<{ ratio: number; anchor: string } | null>(null);
 
   const activeCourse = readingCourses.find((course) => course.id === selectedCourseId);
   const readableResources = activeCourse?.resourceIds.length
@@ -429,9 +430,39 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
   }
 
   function changeReadingMode(next: ReadingMode) {
+    if (next === readingMode) return;
+    const container = scrollRef.current;
+    if (container) {
+      const ratio = readingMode === "frame"
+        ? container.scrollTop / Math.max(1, container.scrollHeight - container.clientHeight)
+        : (window.scrollY - (window.scrollY + container.getBoundingClientRect().top) + 120) / Math.max(1, container.scrollHeight - window.innerHeight);
+      const anchor = readingMode === "frame" ? currentAnchor(container) : currentPageAnchor(container);
+      modeSwitchProgressRef.current = { ratio: Math.min(1, Math.max(0, ratio)), anchor };
+      recordProgress(modeSwitchProgressRef.current.ratio, anchor);
+    }
     restoredResourceRef.current = 0;
     setReadingMode(next);
     setSelectionAction(null);
+  }
+
+  useEffect(() => {
+    const saved = modeSwitchProgressRef.current;
+    const container = scrollRef.current;
+    if (!saved || !container || !readerMarkdown) return;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (readingMode === "frame") container.scrollTop = saved.ratio * Math.max(0, container.scrollHeight - container.clientHeight);
+      else {
+        const articleTop = window.scrollY + container.getBoundingClientRect().top;
+        window.scrollTo({ top: articleTop + saved.ratio * Math.max(0, container.scrollHeight - window.innerHeight), behavior: "auto" });
+      }
+      restoredResourceRef.current = readingResource?.id || 0;
+      modeSwitchProgressRef.current = null;
+    }));
+  }, [readerMarkdown, readingMode, readingResource?.id]);
+
+  function speakEnglish(text: string) {
+    if (!("speechSynthesis" in window)) { onNotice("当前浏览器不支持系统朗读"); return; }
+    speechSynthesis.cancel(); const utterance = new SpeechSynthesisUtterance(text); utterance.lang = "en-US"; speechSynthesis.speak(utterance);
   }
 
   async function createFolder() {
@@ -553,7 +584,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
         await jsonRequest("/api/vocabulary", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ word: action.text, sourceType: "resource", sourceId: String(readingResource.id), sourceAnchor: action.anchor, sourceSentence: action.context, tags: "精读" }),
+          body: JSON.stringify({ word: action.text, sourceType: "resource", resourceId: readingResource.id, sourceTitle: readingResource.title, sourceAnchor: action.anchor, sourceSentence: action.context, tags: "精读" }),
         });
         await onReloadVocabulary();
         onNotice("已保存到 FSRS 单词本，可稍后补充词典与 AI 解释");
@@ -605,7 +636,8 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
           example: lookup.example,
           exampleTranslation: lookup.exampleTranslation,
           sourceType: "resource",
-          sourceId: String(readingResource.id),
+          resourceId: readingResource.id,
+          sourceTitle: readingResource.title,
           sourceAnchor: selectedProgress?.anchor || "",
           sourceSentence: lookup.sourceSentence,
           tags: "精读",
@@ -700,6 +732,10 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
       <header className="reader-toolbar">
         <div className="reader-title"><span>{readingResource.category}</span><h1>{readingResource.title}</h1><small>{progressLabel(selectedProgress?.progressRatio || 0)} · Markdown 阅读器 v1</small></div>
         <div className="reader-controls">
+          <div className="reader-segment reader-mode-switch" aria-label="阅读方式">
+            <button className={readingMode === "frame" ? "active" : ""} onClick={() => changeReadingMode("frame")}>框内</button>
+            <button className={readingMode === "page" ? "active" : ""} onClick={() => changeReadingMode("page")}>页面</button>
+          </div>
           <div className="reader-segment" aria-label="翻译显示方式">
             <button className={translationMode === "original" ? "active" : ""} onClick={() => setTranslationMode("original")}>原文</button>
             <button className={translationMode === "bilingual" ? "active" : ""} onClick={() => setTranslationMode("bilingual")} disabled={!document.hasTranslation}>双语</button>
@@ -708,7 +744,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
           <div className="reader-segment" aria-label="文章字号">
             <button onClick={() => setFontSize((value) => Math.max(14, value - 1))}>A−</button><button onClick={() => setFontSize((value) => Math.min(30, value + 1))}>A＋</button>
           </div>
-          <span className="reader-settings-wrap"><button className="button secondary" onClick={() => setSettingsOpen((value) => !value)} aria-expanded={settingsOpen}>阅读设置 ▾</button>{settingsOpen && <span className="reader-settings-popover"><label>阅读方式<select value={readingMode} onChange={(event) => changeReadingMode(event.target.value as ReadingMode)}><option value="frame">框内阅读</option><option value="page">页面阅读</option></select></label><label>文章字体<select value={fontFamily} onChange={(event) => setFontFamily(event.target.value)}><option value="serif">衬线字体</option><option value="sans">无衬线字体</option></select></label><label>文章行距<select value={lineHeight} onChange={(event) => setLineHeight(Number(event.target.value))}><option value="1.65">紧凑</option><option value="1.9">舒适</option><option value="2.15">宽松</option></select></label><label>正文版心<select value={contentWidth} onChange={(event) => setContentWidth(event.target.value)}><option value="narrow">窄版</option><option value="standard">标准</option><option value="wide">宽版</option></select></label></span>}</span>
+          <span className="reader-settings-wrap"><button className="button secondary" onClick={() => setSettingsOpen((value) => !value)} aria-expanded={settingsOpen}>阅读设置 ▾</button>{settingsOpen && <span className="reader-settings-popover"><label>文章字体<select value={fontFamily} onChange={(event) => setFontFamily(event.target.value)}><option value="serif">衬线字体</option><option value="sans">无衬线字体</option></select></label><label>文章行距<select value={lineHeight} onChange={(event) => setLineHeight(Number(event.target.value))}><option value="1.65">紧凑</option><option value="1.9">舒适</option><option value="2.15">宽松</option></select></label><label>正文版心<select value={contentWidth} onChange={(event) => setContentWidth(event.target.value)}><option value="narrow">窄版</option><option value="standard">标准</option><option value="wide">宽版</option></select></label></span>}</span>
           <button className={`button secondary ${shelfOpen ? "active" : ""}`} onClick={() => setShelfOpen((value) => !value)}>书架</button>
           <button className={`button secondary ${wordbookOpen ? "active" : ""}`} onClick={() => setWordbookOpen((value) => !value)}>词典</button>
           <button className={`button secondary ${focusMode ? "active" : ""}`} onClick={() => setFocusMode((value) => !value)}>⛶ 专注阅读</button>
@@ -743,7 +779,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
     </aside>}
   </div>
   {selectionAction && <div className={`reader-selection-actions ${selectionAction.kind}`} style={{ top: selectionAction.top, left: selectionAction.left }} role="toolbar" aria-label={selectionAction.kind === "term" ? "选词操作" : "选句操作"} onMouseDown={(event) => event.preventDefault()}>
-    {selectionAction.kind === "term" ? <><button onClick={() => { const selection = selectionAction; setSelectionAction(null); void lookupWord(selection.text, selection.context, selection.anchor); }}>查词</button><button onClick={() => void saveSelection(selectionAction)}>保存</button></> : <><button onClick={() => void runSentenceAction("explain", selectionAction)}>解释</button><button onClick={() => void runSentenceAction("translate", selectionAction)}>翻译</button><button disabled title="朗读将在媒体 Provider 接入后启用">朗读</button><button disabled title="跟读将在 Pronunciation Provider 接入后启用">跟读</button><button disabled title="听写将在 STT Provider 接入后启用">听写</button><button onClick={() => void saveSelection(selectionAction)}>保存</button></>}
+    {selectionAction.kind === "term" ? <><button onClick={() => { const selection = selectionAction; setSelectionAction(null); void lookupWord(selection.text, selection.context, selection.anchor); }}>查词</button><button onClick={() => speakEnglish(selectionAction.text)}>朗读</button><button onClick={() => void saveSelection(selectionAction)}>保存</button></> : <><button onClick={() => void runSentenceAction("explain", selectionAction)}>解释</button><button onClick={() => void runSentenceAction("translate", selectionAction)}>翻译</button><button onClick={() => speakEnglish(selectionAction.text)} title="使用浏览器 SpeechSynthesis 朗读">朗读</button><button disabled title="跟读请在口语训练中完成">跟读</button><button disabled title="听写需要STT Provider">听写</button><button onClick={() => void saveSelection(selectionAction)}>保存</button></>}
   </div>}
   </>;
 }

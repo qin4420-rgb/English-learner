@@ -18,6 +18,7 @@ import type {
   UploadItem,
   VocabularyItem,
 } from "./types";
+import type { LearningUse } from "./resource-model";
 
 type View = "desk" | "tools" | "library" | "admin";
 type FontSize = "compact" | "standard" | "large" | "xlarge";
@@ -142,7 +143,7 @@ export default function EnglishHub({ displayName }: { displayName: string }) {
 
   async function removeResource(id: number) {
     if (!window.confirm("确定移除这条目录记录吗？")) return;
-    await jsonRequest(`/api/resources?id=${id}`, { method: "DELETE" });
+    await jsonRequest(`/api/resources?id=${id}&permanent=true`, { method: "DELETE" });
     await loadResources();
   }
 
@@ -177,6 +178,14 @@ export default function EnglishHub({ displayName }: { displayName: string }) {
     URL.revokeObjectURL(url);
   }
 
+  function startLearning(resource: ResourceItem, learningUse: LearningUse) {
+    const target: DeskTab = learningUse === "Listening" ? "listening" : learningUse === "Speaking" ? "speaking" : learningUse === "Vocabulary" ? "vocabulary" : "reading";
+    window.localStorage.setItem("english-room-reader-resource", String(resource.id));
+    window.localStorage.setItem("english-room-media-resource", String(resource.id));
+    window.localStorage.setItem("english-room-speaking-resource", String(resource.id));
+    setDeskTab(target);
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -195,9 +204,9 @@ export default function EnglishHub({ displayName }: { displayName: string }) {
 
         <div className="content-wrap">
           {loading ? <div className="loading-screen"><span className="loader" />正在打开你的学习空间…</div> : <>
-            {view === "desk" && <LearningDesk activeTab={deskTab} onTabChange={setDeskTab} courses={courses} resources={resources} notes={notes} vocabulary={vocabulary} progress={progress} activities={activities} plans={plans} onReloadResources={loadResources} onReloadCourses={loadCourses} onReloadNotes={loadNotes} onReloadVocabulary={loadVocabulary} onReloadProgress={loadProgress} onReloadActivities={loadActivities} onReloadPlans={loadPlans} onNotice={setNotice} />}
+            {view === "desk" && <LearningDesk activeTab={deskTab} onTabChange={setDeskTab} courses={courses} resources={resources} notes={notes} vocabulary={vocabulary} progress={progress} activities={activities} plans={plans} providers={providers} onReloadResources={loadResources} onReloadCourses={loadCourses} onReloadNotes={loadNotes} onReloadVocabulary={loadVocabulary} onReloadProgress={loadProgress} onReloadActivities={loadActivities} onReloadPlans={loadPlans} onNotice={setNotice} />}
             {view === "tools" && <ToolDirectory resources={resources} importing={importing} onImport={importDirectory} onReload={loadResources} onNotice={setNotice} onToggleFavorite={toggleFavorite} onRemove={removeResource} onReorder={reorderResources} />}
-            {view === "library" && <ResourceLibrary resources={resources} onRead={(resource) => { window.localStorage.setItem("english-room-reader-resource", String(resource.id)); setDeskTab("reading"); }} onMaintain={() => setView("admin")} onReloadResources={loadResources} onNotice={setNotice} onToggleFavorite={toggleFavorite} />}
+            {view === "library" && <ResourceLibrary resources={resources} onRead={(resource) => startLearning(resource, "Reading")} onStartLearning={startLearning} onReloadResources={loadResources} onNotice={setNotice} onToggleFavorite={toggleFavorite} />}
             {view === "admin" && <MaintenanceCenter oneDrive={oneDrive} aiConfigured={aiConfigured} providers={providers} jobs={jobs} uploads={uploads} resources={resources} onReload={refreshAll} onNotice={setNotice} onExport={exportData} />}
           </>}
         </div>

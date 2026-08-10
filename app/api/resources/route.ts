@@ -1,4 +1,9 @@
 import { ensureDatabase, getDatabase, getOwnerId, jsonError } from "@/app/api/_lib/runtime";
+import {
+  normalizeResourceType,
+  parseResourceMetadata,
+  stringifyResourceMetadata,
+} from "@/app/resource-model";
 
 type ResourceInput = {
   id?: number;
@@ -25,9 +30,13 @@ type ResourceInput = {
   status?: string;
   sortOrder?: number;
   isFavorite?: boolean;
+  readingFolderId?: number | null;
+  tags?: string[];
+  learningUses?: string[];
 };
 
 function mapResource(row: Record<string, unknown>) {
+  const metadata = parseResourceMetadata(row.metadata_json, row.resource_type);
   return {
     id: Number(row.id),
     title: String(row.title),
@@ -35,7 +44,9 @@ function mapResource(row: Record<string, unknown>) {
     category: String(row.category ?? "未分类"),
     level: String(row.level ?? "未分级"),
     skills: String(row.skills ?? "综合"),
-    resourceType: String(row.resource_type ?? "网站"),
+    resourceType: normalizeResourceType(row.resource_type),
+    learningUses: metadata.learningUses,
+    tags: metadata.tags,
     url: String(row.url),
     sourceName: String(row.source_name ?? "手工添加"),
     sourceUrl: String(row.source_url ?? ""),
@@ -59,14 +70,13 @@ function mapResource(row: Record<string, unknown>) {
   };
 }
 
-function normalizeMetadataJson(value: string | undefined) {
-  if (!value?.trim()) return "{}";
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? JSON.stringify(parsed) : "{}";
-  } catch {
-    return "{}";
-  }
+function mergeMetadata(body: ResourceInput, current: unknown, typeValue: unknown) {
+  const metadata = parseResourceMetadata(body.metadataJson ?? current, typeValue);
+  return stringifyResourceMetadata({
+    ...metadata,
+    tags: body.tags ?? metadata.tags,
+    learningUses: body.learningUses ?? metadata.learningUses,
+  }, typeValue);
 }
 
 export async function GET(request: Request) {
@@ -98,19 +108,20 @@ export async function POST(request: Request) {
       return jsonError(new Error("请输入完整的 http 或 https 链接"), 400);
     }
 
+    const resourceType = normalizeResourceType(body.resourceType);
     const values = [
       title,
       body.description?.trim() ?? "",
       body.category?.trim() || "未分类",
       body.level?.trim() || "未分级",
       body.skills?.trim() || "综合",
-      body.resourceType?.trim() || "网站",
+      resourceType,
       url,
       body.sourceName?.trim() || "手工添加",
       body.sourceUrl?.trim() || "",
       body.collection?.trim() || "library",
       body.iconUrl?.trim() || "",
-      normalizeMetadataJson(body.metadataJson),
+      mergeMetadata(body, undefined, resourceType),
       body.status || "active",
       Number.isFinite(body.sortOrder) ? Number(body.sortOrder) : 0,
       body.isFavorite ? 1 : 0,
@@ -140,12 +151,24 @@ export async function PATCH(request: Request) {
     const ownerId = await getOwnerId();
     const body = (await request.json()) as ResourceInput;
     if (!body.id) return jsonError(new Error("缺少资源编号"), 400);
-    if (typeof body.isFavorite === "boolean") {
-      await getDatabase()
-        .prepare("UPDATE resources SET is_favorite=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?")
-        .bind(body.isFavorite ? 1 : 0, body.id, ownerId)
-        .run();
-    }
+    const current = await getDatabase().prepare("SELECT * FROM resources WHERE id=? AND owner_id=?").bind(body.id, ownerId).first<Record<string, unknown>>();
+    if (!current) return jsonError(new Error("资源不存在"), 404);
+    const next = {
+      title: body.title?.trim() || String(current.title),
+      description: body.description === undefined ? String(current.description ?? "") : body.description.trim(),
+      category: body.category?.trim() || String(current.category ?? "未分类"),
+      resourceType: body.resourceType ? normalizeResourceType(body.resourceType) : normalizeResourceType(current.resource_type),
+      sourceName: body.sourceName === undefined ? String(current.source_name ?? "") : body.sourceName.trim(),
+      sourceUrl: body.sourceUrl === undefined ? String(current.source_url ?? "") : body.sourceUrl.trim(),
+      folderId: body.readingFolderId === undefined ? current.reading_folder_id : body.readingFolderId,
+      metadata: mergeMetadata(body, current.metadata_json, body.resourceType || current.resource_type),
+      processingStatus: body.processingStatus || String(current.processing_status ?? "ready"),
+      translationStatus: body.translationStatus || String(current.translation_status ?? "none"),
+      status: body.status || String(current.status ?? "active"),
+      favorite: typeof body.isFavorite === "boolean" ? body.isFavorite ? 1 : 0 : Number(current.is_favorite ?? 0),
+    };
+    await getDatabase().prepare(`UPDATE resources SET title=?,description=?,category=?,resource_type=?,source_name=?,source_url=?,reading_folder_id=?,metadata_json=?,processing_status=?,translation_status=?,status=?,is_favorite=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?`)
+      .bind(next.title, next.description, next.category, next.resourceType, next.sourceName, next.sourceUrl, next.folderId || null, next.metadata, next.processingStatus, next.translationStatus, next.status, next.favorite, body.id, ownerId).run();
     return Response.json({ ok: true });
   } catch (error) {
     return jsonError(error);
@@ -158,8 +181,13 @@ export async function DELETE(request: Request) {
     const ownerId = await getOwnerId();
     const id = Number(new URL(request.url).searchParams.get("id"));
     if (!id) return jsonError(new Error("缺少资源编号"), 400);
-    await getDatabase().prepare("DELETE FROM resources WHERE id=? AND owner_id=?").bind(id, ownerId).run();
-    return Response.json({ ok: true });
+    const permanent = new URL(request.url).searchParams.get("permanent") === "true";
+    if (permanent) {
+      await getDatabase().prepare("DELETE FROM resources WHERE id=? AND owner_id=?").bind(id, ownerId).run();
+      return Response.json({ ok: true, archived: false });
+    }
+    await getDatabase().prepare("UPDATE resources SET status='archived',updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(id, ownerId).run();
+    return Response.json({ ok: true, archived: true });
   } catch (error) {
     return jsonError(error);
   }
