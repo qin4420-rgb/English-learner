@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { DEVELOPMENT_VIDEO_FIXTURE } from "./_fixtures/media";
 import MediaLearningPlayer from "./components/MediaLearningPlayer";
 import NcePlayer from "./NcePlayer";
+import PodcastStudio from "./PodcastStudio";
 import type { MediaKind, MediaSegment, ProgressItem, ResourceItem } from "./types";
 import { parseResourceMetadata } from "./resource-model";
 
@@ -11,6 +12,7 @@ type Props = {
   resources: ResourceItem[];
   progress: ProgressItem[];
   onReloadProgress: () => Promise<void>;
+  onReloadResources: () => Promise<void>;
   onNotice: (message: string) => void;
 };
 
@@ -24,10 +26,14 @@ function mediaSegments(resource: ResourceItem): MediaSegment[] {
   return parseResourceMetadata(resource.metadataJson, resource.resourceType).mediaSegments;
 }
 
-export default function ListeningStudio({ resources, progress, onReloadProgress, onNotice }: Props) {
-  const [section, setSection] = useState<"mine" | "nce">("mine");
+export default function ListeningStudio({ resources, progress, onReloadProgress, onReloadResources, onNotice }: Props) {
+  const [section, setSection] = useState<"mine" | "nce" | "podcast">("mine");
   const mediaResources = useMemo(() => resources.filter((resource) => resource.collection === "library" && !["hidden", "archived"].includes(resource.status) && mediaKind(resource)), [resources]);
   const [selectedId, setSelectedId] = useState(0);
+  useEffect(() => {
+    const saved = localStorage.getItem("english-room-listening-section");
+    if (saved === "mine" || saved === "nce" || saved === "podcast") queueMicrotask(() => setSection(saved));
+  }, []);
   useEffect(() => { queueMicrotask(() => setSelectedId((current) => current || Number(localStorage.getItem("english-room-media-resource") || 0))); }, []);
   const selected = mediaResources.find((resource) => resource.id === selectedId) || mediaResources[0];
   const selectedKind = selected ? mediaKind(selected) : null;
@@ -45,8 +51,8 @@ export default function ListeningStudio({ resources, progress, onReloadProgress,
 
   return <section className="listening-studio-page">
     <div className="page-heading"><div><p className="eyebrow">LISTENING STUDIO</p><h1>听力训练</h1><p>音频和视频共用播放器、文字稿、高亮、Seek 与句子循环；没有文字稿时不会生成假字幕。</p></div></div>
-    <div className="studio-section-tabs"><button className={section === "mine" ? "active" : ""} onClick={() => setSection("mine")}>我的听力资料 <span>{mediaResources.length}</span></button><button className={section === "nce" ? "active" : ""} onClick={() => setSection("nce")}>新概念英语</button></div>
-    {section === "nce" ? <NcePlayer progress={progress} onSaved={onReloadProgress} onNotice={onNotice} /> : <>
+    <div className="studio-section-tabs"><button className={section === "mine" ? "active" : ""} onClick={() => { setSection("mine"); localStorage.setItem("english-room-listening-section", "mine"); }}>我的听力资料 <span>{mediaResources.length}</span></button><button className={section === "nce" ? "active" : ""} onClick={() => { setSection("nce"); localStorage.setItem("english-room-listening-section", "nce"); }}>新概念英语</button><button className={section === "podcast" ? "active" : ""} onClick={() => { setSection("podcast"); localStorage.setItem("english-room-listening-section", "podcast"); }}>Podcast</button></div>
+    {section === "nce" ? <NcePlayer progress={progress} onSaved={onReloadProgress} onNotice={onNotice} /> : section === "podcast" ? <PodcastStudio resources={resources} progress={progress} onReloadResources={onReloadResources} onReloadProgress={onReloadProgress} onNotice={onNotice} /> : <>
       {selected && selectedKind ? <div className="listening-resource-layout">
         <aside className="panel media-resource-list"><div className="panel-heading"><div><p className="eyebrow">MY MEDIA</p><h2>我的资料</h2></div></div>{mediaResources.map((resource) => <button className={resource.id === selected.id ? "active" : ""} key={resource.id} onClick={() => { setSelectedId(resource.id); localStorage.setItem("english-room-media-resource", String(resource.id)); }}><span>{mediaKind(resource) === "video" ? "VIDEO" : "AUDIO"}</span><div><strong>{resource.title}</strong><small>{mediaSegments(resource).length ? `${mediaSegments(resource).length} 句文字稿` : "文字稿尚未生成"}</small></div></button>)}</aside>
         <MediaLearningPlayer key={selected.id} kind={selectedKind} src={selected.sourceUrl || selected.url} title={selected.title} segments={segments} initialTime={(selectedProgress?.progressSeconds || 0) * 1000} onProgressSave={saveProgress} onSegmentAction={(action) => onNotice(action === "lookup" ? "句子查词入口已保留；可在阅读器与词汇详情中查看上下文。" : action === "shadow" ? "可切换到口语训练按句跟读。" : "句子已标记。")}/>

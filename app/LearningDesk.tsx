@@ -91,7 +91,7 @@ export default function LearningDesk(props: Props) {
   }
 
   if (activeTab === "listening") {
-    return <ListeningStudio resources={resources} progress={progress} onReloadProgress={onReloadProgress} onNotice={onNotice} />;
+    return <ListeningStudio resources={resources} progress={progress} onReloadResources={onReloadResources} onReloadProgress={onReloadProgress} onNotice={onNotice} />;
   }
 
   if (activeTab === "speaking") {

@@ -62,7 +62,7 @@ export async function POST(request: Request) {
     const lineHeight = Math.min(2.5, Math.max(1.35, Number(body.lineHeight ?? 1.9)));
     const fontFamily = ["serif", "sans"].includes(body.fontFamily || "") ? body.fontFamily : "serif";
     const contentWidth = ["narrow", "standard", "wide"].includes(body.contentWidth || "") ? body.contentWidth : "standard";
-    const translationMode = ["original", "bilingual", "translation"].includes(body.translationMode || "") ? body.translationMode : "original";
+    const translationMode = ["original", "tap", "bilingual", "translation"].includes(body.translationMode || "") ? body.translationMode : "original";
     const outlineJson = String(body.outlineJson || "[]").slice(0, 24000);
     const completed = Boolean(body.completed || progressRatio >= 0.98);
 

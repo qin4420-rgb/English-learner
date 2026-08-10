@@ -12,6 +12,8 @@ export type DistilledDocument = {
   aiEnhanced: boolean;
 };
 
+export type TranslationBlock = { id: string; text: string };
+
 function decodeHtml(value: string): string {
   const named: Record<string, string> = {
     amp: "&", quot: '"', apos: "'", lt: "<", gt: ">", nbsp: " ",
@@ -188,6 +190,40 @@ async function aiEnrich(title: string, original: string): Promise<Omit<Distilled
       ? parsed.vocabulary.slice(0, 80).map((item) => ({ word: String(item.word || ""), meaning: String(item.meaning || ""), example: item.example ? String(item.example) : "" })).filter((item) => item.word)
       : [],
   };
+}
+
+export async function translateBlocks(blocks: TranslationBlock[]): Promise<Map<string, string>> {
+  const bindings = getRuntimeBindings();
+  const translated = new Map<string, string>();
+  if (!bindings.DEEPSEEK_API_KEY || !blocks.length) return translated;
+  for (let start = 0; start < blocks.length; start += 60) {
+    const batch = blocks.slice(start, start + 60);
+    const response = await fetch("https://api.deepseek.com/chat/completions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${bindings.DEEPSEEK_API_KEY}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        model: bindings.DEEPSEEK_MODEL || "deepseek-v4-pro",
+        thinking: { type: "disabled" },
+        response_format: { type: "json_object" },
+        max_tokens: 8000,
+        messages: [
+          { role: "system", content: "把英文学习资料逐段翻译为忠实、自然的简体中文。只输出JSON对象，格式为 {\"blocks\":[{\"id\":\"原ID\",\"translation\":\"中文\"}]}。不得合并、拆分或改写ID。" },
+          { role: "user", content: JSON.stringify({ blocks: batch }) },
+        ],
+      }),
+    });
+    const data = await response.json() as { choices?: { message?: { content?: string } }[]; error?: { message?: string } };
+    if (!response.ok) throw new Error(data.error?.message || "DeepSeek 分段翻译失败");
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) throw new Error("DeepSeek 没有返回分段翻译");
+    const parsed = JSON.parse(content) as { blocks?: { id?: string; translation?: string }[] };
+    for (const item of parsed.blocks || []) {
+      const id = String(item.id || "");
+      const translation = String(item.translation || "").trim();
+      if (id && translation && batch.some((block) => block.id === id)) translated.set(id, translation);
+    }
+  }
+  return translated;
 }
 
 export async function distillDocument(

@@ -182,6 +182,7 @@ export default function EnglishHub({ displayName }: { displayName: string }) {
     const target: DeskTab = learningUse === "Listening" ? "listening" : learningUse === "Speaking" ? "speaking" : learningUse === "Vocabulary" ? "vocabulary" : "reading";
     window.localStorage.setItem("english-room-reader-resource", String(resource.id));
     window.localStorage.setItem("english-room-media-resource", String(resource.id));
+    if (learningUse === "Listening") window.localStorage.setItem("english-room-listening-section", resource.resourceType === "Podcast" ? "podcast" : "mine");
     window.localStorage.setItem("english-room-speaking-resource", String(resource.id));
     setDeskTab(target);
   }

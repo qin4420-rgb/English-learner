@@ -64,7 +64,7 @@ export type ReadingProgressItem = {
   fontFamily: "serif" | "sans" | string;
   lineHeight: number;
   contentWidth: "narrow" | "standard" | "wide" | string;
-  translationMode: "original" | "bilingual" | "translation" | string;
+  translationMode: "original" | "tap" | "bilingual" | "translation" | string;
   outlineJson: string;
   formatVersion: number;
   lastReadAt: string;

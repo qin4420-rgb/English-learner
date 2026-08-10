@@ -53,7 +53,21 @@ export async function PATCH(request: Request) {
   try {
     await ensureDatabase();
     const ownerId = await getOwnerId();
-    const body = await request.json() as { id?: number; name?: string; resourceId?: number; resourceIds?: number[]; folderId?: number | null };
+    const body = await request.json() as { id?: number; name?: string; resourceId?: number; resourceIds?: number[]; folderId?: number | null; orderedIds?: number[] };
+
+    if (Array.isArray(body.orderedIds)) {
+      const orderedIds = body.orderedIds.map(Number);
+      if (!orderedIds.length || orderedIds.length > 500 || orderedIds.some((id) => !Number.isInteger(id) || id <= 0) || new Set(orderedIds).size !== orderedIds.length) {
+        return jsonError(new Error("文件夹排序数据无效"), 400);
+      }
+      const owned = await getDatabase().prepare("SELECT id FROM reading_folders WHERE owner_id=? ORDER BY id").bind(ownerId).all<{ id: number }>();
+      const ownedIds = (owned.results || []).map((row) => Number(row.id));
+      if (ownedIds.length !== orderedIds.length || orderedIds.some((id) => !ownedIds.includes(id))) {
+        return jsonError(new Error("只能排序当前账户的全部文件夹"), 400);
+      }
+      await getDatabase().batch(orderedIds.map((id, index) => getDatabase().prepare("UPDATE reading_folders SET sort_order=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(index, id, ownerId)));
+      return Response.json({ ok: true });
+    }
 
     if (body.resourceId || body.resourceIds?.length) {
       const folderId = body.folderId ? Number(body.folderId) : null;

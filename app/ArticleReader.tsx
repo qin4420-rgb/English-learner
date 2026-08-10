@@ -40,6 +40,8 @@ type LookupResult = {
 type LookupDetails = Record<LookupTab, string[]>;
 type LookupTab = "context" | "usage" | "examples" | "mnemonic" | "roots" | "etymology" | "collocations" | "synonyms" | "similarWords" | "replacements" | "derivedForms";
 type ReadingMode = "frame" | "page";
+type ReaderTheme = "paper" | "white" | "dark";
+type TranslationMode = "original" | "tap" | "bilingual" | "translation";
 type SelectionAction = {
   text: string;
   context: string;
@@ -122,16 +124,6 @@ function toBlocks(markdown: string) {
     .filter(Boolean);
 }
 
-function shortTitle(block: string, index: number) {
-  const plain = block
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/[*_`>#-]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  const sentence = plain.split(/(?<=[.!?])\s+/)[0] || plain;
-  return sentence ? `${sentence.slice(0, 54)}${sentence.length > 54 ? "…" : ""}` : `第 ${index + 1} 节`;
-}
-
 function buildReaderDocument(markdown: string) {
   const { original, translation } = splitArticleMarkdown(markdown);
   const translationBlocks = toBlocks(translation).filter((block) => !/^尚未生成译文/.test(block));
@@ -144,23 +136,18 @@ function buildReaderDocument(markdown: string) {
       if (current?.body.join("\n").trim()) headed.push(current);
       current = { title: heading[2].replace(/[*_`]/g, "").trim(), level: heading[1].length, body: [] };
     } else {
-      if (!current) current = { title: "正文", level: 2, body: [] };
+      if (!current) current = { title: "", level: 2, body: [] };
       current.body.push(line);
     }
   }
   if (current?.body.join("\n").trim()) headed.push(current);
 
   let groups: { title: string; level: number; blocks: string[] }[];
-  if (headed.length >= 2) {
+  if (headed.length >= 1) {
     groups = headed.map((section) => ({ title: section.title, level: section.level, blocks: toBlocks(section.body.join("\n")) })).filter((section) => section.blocks.length);
   } else {
     const blocks = toBlocks(original);
-    const groupSize = blocks.length > 20 ? 6 : blocks.length > 10 ? 5 : Math.max(1, blocks.length);
-    groups = [];
-    for (let index = 0; index < blocks.length; index += groupSize) {
-      const sectionBlocks = blocks.slice(index, index + groupSize);
-      groups.push({ title: shortTitle(sectionBlocks[0] || "", groups.length), level: 2, blocks: sectionBlocks });
-    }
+    groups = blocks.length ? [{ title: "", level: 2, blocks }] : [];
   }
 
   const originalCount = Math.max(1, groups.reduce((sum, group) => sum + group.blocks.length, 0));
@@ -171,13 +158,36 @@ function buildReaderDocument(markdown: string) {
     const end = Math.round(originalOffset / originalCount * translationBlocks.length);
     return {
       id: `reader-section-${index + 1}`,
-      title: group.title || `第 ${index + 1} 节`,
+      title: group.title,
       level: group.level,
       originalBlocks: group.blocks,
       translationBlocks: translationBlocks.slice(start, end),
     };
   });
   return { original, translation, sections, hasTranslation: translationBlocks.length > 0 };
+}
+
+function parseFrontmatter(markdown: string) {
+  const block = markdown.match(/^---\n([\s\S]*?)\n---/)?.[1] || "";
+  const fields: Record<string, string> = {};
+  for (const line of block.split("\n")) {
+    const match = line.match(/^([a-zA-Z_][\w-]*):\s*(.*)$/);
+    if (!match) continue;
+    fields[match[1].toLowerCase()] = match[2].trim().replace(/^(["'])(.*)\1$/, "$2");
+  }
+  return fields;
+}
+
+function articleSource(resource: ResourceItem) {
+  if (resource.sourceName && !["链接导入", "文件导入", "手工添加", "网页蒸馏", "资源整理"].includes(resource.sourceName)) return resource.sourceName;
+  try { return new URL(resource.sourceUrl).hostname.replace(/^www\./, "").toUpperCase(); } catch { return resource.category || "ENGLISH ROOM"; }
+}
+
+function articleSubtitle(resource: ResourceItem, frontmatter: Record<string, string>) {
+  if (frontmatter.subtitle) return frontmatter.subtitle;
+  const description = resource.description.trim();
+  if (!description || /尚未配置|正文已经保存|等待(整理|处理)|AI\s*增强/i.test(description)) return "";
+  return description;
 }
 
 function progressLabel(ratio: number) {
@@ -207,12 +217,23 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
   const [fontFamily, setFontFamily] = useState(DEFAULT_PROGRESS.fontFamily);
   const [lineHeight, setLineHeight] = useState(DEFAULT_PROGRESS.lineHeight);
   const [contentWidth, setContentWidth] = useState(DEFAULT_PROGRESS.contentWidth);
-  const [translationMode, setTranslationMode] = useState(DEFAULT_PROGRESS.translationMode);
-  const [wordbookOpen, setWordbookOpen] = useState(true);
-  const [shelfOpen, setShelfOpen] = useState(true);
-  const [readingMode, setReadingMode] = useState<ReadingMode>("frame");
+  const [translationMode, setTranslationMode] = useState<TranslationMode>(DEFAULT_PROGRESS.translationMode as TranslationMode);
+  const [wordbookOpen, setWordbookOpen] = useState(false);
+  const [shelfOpen, setShelfOpen] = useState(false);
+  const [shelfTab, setShelfTab] = useState<"articles" | "outline">("articles");
+  const [readingMode, setReadingMode] = useState<ReadingMode>("page");
   const [focusMode, setFocusMode] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [toolbarCompact, setToolbarCompact] = useState(false);
+  const [toolbarVisible, setToolbarVisible] = useState(true);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [readerTheme, setReaderTheme] = useState<ReaderTheme>("paper");
+  const [paragraphSpacing, setParagraphSpacing] = useState("standard");
+  const [preferencesReady, setPreferencesReady] = useState(false);
+  const [revealedTranslations, setRevealedTranslations] = useState<Set<string>>(new Set());
+  const [quickLookupOpen, setQuickLookupOpen] = useState(false);
+  const [quickLookupPosition, setQuickLookupPosition] = useState({ top: 130, left: 320 });
   const [lookupLoading, setLookupLoading] = useState(false);
   const [lookup, setLookup] = useState<LookupResult | null>(null);
   const [lookupTab, setLookupTab] = useState<LookupTab>("context");
@@ -221,12 +242,15 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
   const [openFolderKey, setOpenFolderKey] = useState("unfiled");
   const [newFolderName, setNewFolderName] = useState("");
   const [folderFormOpen, setFolderFormOpen] = useState(false);
-  const [folderMenuId, setFolderMenuId] = useState<number | null>(null);
   const [selectionAction, setSelectionAction] = useState<SelectionAction | null>(null);
   const [sentenceInsight, setSentenceInsight] = useState<SentenceInsight | null>(null);
   const [sentenceLoading, setSentenceLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scrollFrameRef = useRef<number | null>(null);
+  const lastScrollPositionRef = useRef(0);
+  const lastObservedProgressRef = useRef<Record<number, { ratio: number; anchor: string }>>({});
+  const latestProgressRef = useRef<ReadingProgressItem | undefined>(undefined);
   const restoredResourceRef = useRef(0);
   const modeSwitchProgressRef = useRef<{ ratio: number; anchor: string } | null>(null);
 
@@ -237,30 +261,84 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
   const readingResource = readableResources.find((resource) => resource.id === readingResourceId) || readableResources[0];
   const readerMarkdown = readingResource && readerContent.resourceId === readingResource.id ? readerContent.markdown : "";
   const readerLoading = Boolean(readingResource && readerContent.resourceId !== readingResource.id);
-  const document = useMemo(() => buildReaderDocument(readerMarkdown), [readerMarkdown]);
+  const articleDocument = useMemo(() => buildReaderDocument(readerMarkdown), [readerMarkdown]);
   const selectedProgress = readingResource ? progressMap[readingResource.id] : undefined;
 
   useEffect(() => {
+    latestProgressRef.current = selectedProgress;
+  }, [selectedProgress]);
+
+  const revealToolbar = useCallback(() => {
+    setToolbarVisible(true);
+  }, []);
+
+  useEffect(() => {
+    if ((!toolbarCompact && !focusMode) || !toolbarVisible) return;
+    const autoHideTimer = setTimeout(() => setToolbarVisible(false), 2600);
+    return () => clearTimeout(autoHideTimer);
+  }, [focusMode, toolbarCompact, toolbarVisible]);
+
+  const updateToolbarForPosition = useCallback((position: number, nearTop: boolean) => {
+    const delta = position - lastScrollPositionRef.current;
+    lastScrollPositionRef.current = position;
+    if (nearTop) {
+      setToolbarCompact(false); setToolbarVisible(true);
+      return;
+    }
+    setToolbarCompact(true);
+    if (delta < -24) revealToolbar();
+  }, [revealToolbar]);
+
+  useEffect(() => {
     queueMicrotask(() => {
-      setShelfOpen(localStorage.getItem("english-room-reader-shelf") !== "closed");
-      setWordbookOpen(localStorage.getItem("english-room-reader-dictionary") !== "closed");
-      setReadingMode(localStorage.getItem("english-room-reader-mode") === "page" ? "page" : "frame");
+      setShelfOpen(localStorage.getItem("english-room-reader-shelf") === "open");
+      setWordbookOpen(localStorage.getItem("english-room-reader-dictionary") === "open");
+      setReadingMode(localStorage.getItem("english-room-reader-mode") === "frame" ? "frame" : "page");
+      const theme = localStorage.getItem("english-room-reader-theme");
+      if (theme === "paper" || theme === "white" || theme === "dark") setReaderTheme(theme);
+      const spacing = localStorage.getItem("english-room-reader-paragraph-spacing");
+      if (spacing === "compact" || spacing === "standard" || spacing === "wide") setParagraphSpacing(spacing);
+      setPreferencesReady(true);
     });
   }, []);
 
-  useEffect(() => { localStorage.setItem("english-room-reader-shelf", shelfOpen ? "open" : "closed"); }, [shelfOpen]);
-  useEffect(() => { localStorage.setItem("english-room-reader-dictionary", wordbookOpen ? "open" : "closed"); }, [wordbookOpen]);
-  useEffect(() => { localStorage.setItem("english-room-reader-mode", readingMode); }, [readingMode]);
+  useEffect(() => { if (preferencesReady) localStorage.setItem("english-room-reader-shelf", shelfOpen ? "open" : "closed"); }, [preferencesReady, shelfOpen]);
+  useEffect(() => { if (preferencesReady) localStorage.setItem("english-room-reader-dictionary", wordbookOpen ? "open" : "closed"); }, [preferencesReady, wordbookOpen]);
+  useEffect(() => { if (preferencesReady) localStorage.setItem("english-room-reader-mode", readingMode); }, [preferencesReady, readingMode]);
+  useEffect(() => { if (preferencesReady) localStorage.setItem("english-room-reader-theme", readerTheme); }, [preferencesReady, readerTheme]);
+  useEffect(() => { if (preferencesReady) localStorage.setItem("english-room-reader-paragraph-spacing", paragraphSpacing); }, [paragraphSpacing, preferencesReady]);
 
   useEffect(() => {
     applyReaderFocusMode(focusMode);
-    const handleKey = (event: KeyboardEvent) => { if (event.key === "Escape") setFocusMode(false); };
+    const handleKey = (event: KeyboardEvent) => {
+      revealToolbar();
+      if (event.key === "Escape") {
+        setFocusMode(false); setMoreOpen(false); setSettingsOpen(false); setShelfOpen(false); setWordbookOpen(false);
+        if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+      }
+    };
+    const handleFullscreen = () => {
+      const active = Boolean(document.fullscreenElement);
+      setFullscreen(active);
+      if (!active) setFocusMode(false);
+    };
     window.addEventListener("keydown", handleKey);
+    document.addEventListener("fullscreenchange", handleFullscreen);
     return () => {
       applyReaderFocusMode(false);
       window.removeEventListener("keydown", handleKey);
+      document.removeEventListener("fullscreenchange", handleFullscreen);
     };
-  }, [focusMode]);
+  }, [focusMode, revealToolbar]);
+
+  useEffect(() => {
+    if (focusMode) queueMicrotask(() => { setToolbarCompact(true); revealToolbar(); setShelfOpen(false); setWordbookOpen(false); });
+  }, [focusMode, revealToolbar]);
+
+  useEffect(() => () => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    if (scrollFrameRef.current) cancelAnimationFrame(scrollFrameRef.current);
+  }, []);
 
   const loadFolders = useCallback(async () => {
     const data = await jsonRequest<{ folders: ReadingFolderItem[] }>("/api/reading-folders");
@@ -303,7 +381,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
   }, [onNotice, readingResource]);
 
   useEffect(() => {
-    if (!readingResource || !progressReady || restoredResourceRef.current === readingResource.id || !readerMarkdown) return;
+    if (!readingResource || !progressReady || restoredResourceRef.current === readingResource.id || !readerMarkdown || modeSwitchProgressRef.current) return;
     const saved = progressMap[readingResource.id];
     requestAnimationFrame(() => {
       setFontSize(saved?.fontSize || DEFAULT_PROGRESS.fontSize);
@@ -320,7 +398,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
           else if (anchorElement) container.scrollTop = Math.max(0, anchorElement.offsetTop - 20);
         } else {
           const articleTop = window.scrollY + container.getBoundingClientRect().top;
-          if ((saved?.progressRatio || 0) > 0) window.scrollTo({ top: articleTop + (saved?.progressRatio || 0) * Math.max(0, container.scrollHeight - window.innerHeight), behavior: "auto" });
+          if ((saved?.progressRatio || 0) > 0) window.scrollTo({ top: Math.max(0, articleTop - 120 + (saved?.progressRatio || 0) * Math.max(0, container.scrollHeight - window.innerHeight)), behavior: "auto" });
           else anchorElement?.scrollIntoView({ block: "start", behavior: "auto" });
         }
         restoredResourceRef.current = readingResource.id;
@@ -329,14 +407,14 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
   }, [progressMap, progressReady, readerMarkdown, readingMode, readingResource]);
 
   const persistProgress = useCallback(async (resourceId: number, ratio: number, anchor: string) => {
-    const outlineJson = JSON.stringify(document.sections.map((section) => ({ id: section.id, title: section.title, level: section.level })));
+    const outlineJson = JSON.stringify(articleDocument.sections.map((section) => ({ id: section.id, title: section.title, level: section.level })));
     await jsonRequest("/api/reading-progress", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ resourceId, progressRatio: ratio, anchor, completed: ratio >= 0.98, fontSize, fontFamily, lineHeight, contentWidth, translationMode, outlineJson, formatVersion: 1 }),
       keepalive: true,
     });
-  }, [contentWidth, document.sections, fontFamily, fontSize, lineHeight, translationMode]);
+  }, [articleDocument.sections, contentWidth, fontFamily, fontSize, lineHeight, translationMode]);
 
   const scheduleProgressSave = useCallback((ratio: number, anchor: string) => {
     if (!readingResource) return;
@@ -367,11 +445,29 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
     return anchor;
   }
 
+  function currentPageRatio(container: HTMLDivElement) {
+    const articleTop = window.scrollY + container.getBoundingClientRect().top;
+    const total = Math.max(1, container.scrollHeight - window.innerHeight);
+    return Math.min(1, Math.max(0, (window.scrollY - articleTop + 120) / total));
+  }
+
+  function scrollPageToRatio(container: HTMLDivElement, ratio: number) {
+    const articleTop = window.scrollY + container.getBoundingClientRect().top;
+    const total = Math.max(0, container.scrollHeight - window.innerHeight);
+    window.scrollTo({ top: Math.max(0, articleTop - 120 + ratio * total), behavior: "auto" });
+  }
+
   const recordProgress = useCallback((ratio: number, anchor: string) => {
     if (!readingResource) return;
-    setProgressMap((current) => ({
-      ...current,
-      [readingResource.id]: {
+    const observed = lastObservedProgressRef.current[readingResource.id];
+    if (observed && Math.abs(observed.ratio - ratio) < 0.002 && observed.anchor === anchor) return;
+    lastObservedProgressRef.current[readingResource.id] = { ratio, anchor };
+    setProgressMap((current) => {
+      const previous = current[readingResource.id];
+      if (previous && Math.abs(previous.progressRatio - ratio) < 0.002 && previous.anchor === anchor) return current;
+      return {
+        ...current,
+        [readingResource.id]: {
         ...(current[readingResource.id] || DEFAULT_PROGRESS),
         id: current[readingResource.id]?.id || 0,
         resourceId: readingResource.id,
@@ -386,8 +482,9 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
         outlineJson: current[readingResource.id]?.outlineJson || "[]",
         formatVersion: 1,
         lastReadAt: new Date().toISOString(),
-      },
-    }));
+        },
+      };
+    });
     scheduleProgressSave(ratio, anchor);
   }, [contentWidth, fontFamily, fontSize, lineHeight, readingResource, scheduleProgressSave, translationMode]);
 
@@ -397,29 +494,33 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
     const total = Math.max(1, container.scrollHeight - container.clientHeight);
     const ratio = Math.min(1, Math.max(0, container.scrollTop / total));
     const anchor = currentAnchor(container);
+    updateToolbarForPosition(container.scrollTop, container.scrollTop < 90);
     recordProgress(ratio, anchor);
   }
 
   useEffect(() => {
     if (readingMode !== "page" || !readingResource) return;
     const handlePageScroll = () => {
-      const container = scrollRef.current;
-      if (!container || restoredResourceRef.current !== readingResource.id) return;
-      const articleTop = window.scrollY + container.getBoundingClientRect().top;
-      const total = Math.max(1, container.scrollHeight - window.innerHeight);
-      const ratio = Math.min(1, Math.max(0, (window.scrollY - articleTop + 120) / total));
-      recordProgress(ratio, currentPageAnchor(container));
-      setSelectionAction(null);
+      if (scrollFrameRef.current) return;
+      scrollFrameRef.current = requestAnimationFrame(() => {
+        scrollFrameRef.current = null;
+        const container = scrollRef.current;
+        if (!container || restoredResourceRef.current !== readingResource.id) return;
+        const articleTop = window.scrollY + container.getBoundingClientRect().top;
+        updateToolbarForPosition(window.scrollY, window.scrollY < articleTop + 90);
+        recordProgress(currentPageRatio(container), currentPageAnchor(container));
+        setSelectionAction(null);
+      });
     };
     window.addEventListener("scroll", handlePageScroll, { passive: true });
     return () => window.removeEventListener("scroll", handlePageScroll);
-  }, [readingMode, readingResource, recordProgress]);
+  }, [readingMode, readingResource, recordProgress, updateToolbarForPosition]);
 
   useEffect(() => {
     if (!readingResource || restoredResourceRef.current !== readingResource.id) return;
-    const saved = selectedProgress;
-    scheduleProgressSave(saved?.progressRatio || 0, saved?.anchor || document.sections[0]?.id || "");
-  }, [contentWidth, document.sections, fontFamily, fontSize, lineHeight, readingResource, scheduleProgressSave, selectedProgress, translationMode]);
+    const saved = latestProgressRef.current;
+    scheduleProgressSave(saved?.progressRatio || 0, saved?.anchor || articleDocument.sections[0]?.id || "");
+  }, [articleDocument.sections, contentWidth, fontFamily, fontSize, lineHeight, readingResource, scheduleProgressSave, translationMode]);
 
   function jumpToSection(sectionId: string) {
     const container = scrollRef.current;
@@ -435,7 +536,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
     if (container) {
       const ratio = readingMode === "frame"
         ? container.scrollTop / Math.max(1, container.scrollHeight - container.clientHeight)
-        : (window.scrollY - (window.scrollY + container.getBoundingClientRect().top) + 120) / Math.max(1, container.scrollHeight - window.innerHeight);
+        : currentPageRatio(container);
       const anchor = readingMode === "frame" ? currentAnchor(container) : currentPageAnchor(container);
       modeSwitchProgressRef.current = { ratio: Math.min(1, Math.max(0, ratio)), anchor };
       recordProgress(modeSwitchProgressRef.current.ratio, anchor);
@@ -451,10 +552,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
     if (!saved || !container || !readerMarkdown) return;
     requestAnimationFrame(() => requestAnimationFrame(() => {
       if (readingMode === "frame") container.scrollTop = saved.ratio * Math.max(0, container.scrollHeight - container.clientHeight);
-      else {
-        const articleTop = window.scrollY + container.getBoundingClientRect().top;
-        window.scrollTo({ top: articleTop + saved.ratio * Math.max(0, container.scrollHeight - window.innerHeight), behavior: "auto" });
-      }
+      else scrollPageToRatio(container, saved.ratio);
       restoredResourceRef.current = readingResource?.id || 0;
       modeSwitchProgressRef.current = null;
     }));
@@ -484,34 +582,6 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
     }
   }
 
-  async function renameFolder(folder: ReadingFolderItem) {
-    const name = window.prompt("修改文件夹名称", folder.name)?.trim();
-    if (!name || name === folder.name) return;
-    try {
-      await jsonRequest("/api/reading-folders", {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ id: folder.id, name }),
-      });
-      await loadFolders();
-      onNotice("文件夹名称已更新");
-    } catch (error) {
-      onNotice((error as Error).message);
-    }
-  }
-
-  async function deleteFolder(folder: ReadingFolderItem) {
-    if (!window.confirm(`删除“${folder.name}”文件夹？其中的文章会回到“未分类”，文章本身不会被删除。`)) return;
-    try {
-      await jsonRequest(`/api/reading-folders?id=${folder.id}`, { method: "DELETE" });
-      setOpenFolderKey("unfiled");
-      await Promise.all([loadFolders(), onReloadResources()]);
-      onNotice("文件夹已删除，原有文章已回到未分类");
-    } catch (error) {
-      onNotice((error as Error).message);
-    }
-  }
-
   async function assignArticle(resourceId: number, folderId: number | null) {
     try {
       await jsonRequest("/api/reading-folders", {
@@ -527,8 +597,12 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
     }
   }
 
-  async function lookupWord(word: string, context: string, anchor: string) {
-    setWordbookOpen(true);
+  async function lookupWord(word: string, context: string, anchor: string, position?: { top: number; left: number }) {
+    if (position) setQuickLookupPosition({
+      top: Math.max(82, Math.min(window.innerHeight - 190, position.top)),
+      left: Math.max(168, Math.min(window.innerWidth - 168, position.left)),
+    });
+    if (!wordbookOpen) setQuickLookupOpen(true);
     setSentenceInsight(null);
     setLookupTab("context");
     setManualDefinition("");
@@ -604,6 +678,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
 
   async function runSentenceAction(action: "explain" | "translate", selection: SelectionAction) {
     setWordbookOpen(true);
+    setQuickLookupOpen(false);
     setLookup(null);
     setSentenceLoading(true);
     setSentenceInsight({ text: selection.text, action, result: "正在处理所选句子…" });
@@ -644,6 +719,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
         }),
       });
       await onReloadVocabulary();
+      setQuickLookupOpen(false);
       onNotice("词典释义、AI解释、例句和文章原句已加入FSRS单词本");
     } catch (error) {
       onNotice((error as Error).message);
@@ -652,6 +728,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
 
   function showExistingWord(item: VocabularyItem) {
     setWordbookOpen(true);
+    setQuickLookupOpen(false);
     setManualDefinition(item.definition);
     setLookup({
       word: item.word,
@@ -670,6 +747,24 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
     });
   }
 
+  async function toggleFullscreen() {
+    setMoreOpen(false);
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else if (document.documentElement.requestFullscreen) { setFocusMode(true); await document.documentElement.requestFullscreen(); }
+      else setFocusMode(true);
+    } catch { setFocusMode(true); }
+  }
+
+  function toggleTapTranslation(key: string) {
+    if (!window.getSelection()?.isCollapsed) return;
+    setRevealedTranslations((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
   if (!readingResource) {
     return <div className="panel empty-state"><strong>还没有可阅读的Markdown文章</strong><span>到维护中心上传PDF或提交网页链接，整理完成后会出现在这里。</span></div>;
   }
@@ -679,6 +774,13 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
     "--reader-line-height": String(lineHeight),
   } as CSSProperties;
   const articleWords = vocabulary.filter((item) => item.sourceId === String(readingResource.id));
+  const frontmatter = parseFrontmatter(readerMarkdown);
+  const articleWordCount = (articleDocument.original.match(/[A-Za-z]+(?:['’-][A-Za-z]+)*/g) || []).length;
+  const readingMinutes = Math.max(1, Math.ceil(articleWordCount / 220));
+  const articleDateValue = readingResource.publishedAt || readingResource.issueDate || frontmatter.published_at || frontmatter.issue_date || frontmatter.date || "";
+  const parsedArticleDate = articleDateValue ? new Date(articleDateValue) : null;
+  const articleDate = parsedArticleDate && !Number.isNaN(parsedArticleDate.getTime()) ? parsedArticleDate.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }) : articleDateValue;
+  const subtitle = articleSubtitle(readingResource, frontmatter);
   const unfiledArticles = readableResources.filter((resource) => !resource.readingFolderId);
   const availableLookupTabs = lookup ? LOOKUP_TABS.filter((tab) => lookup.aiDetails?.[tab.id]?.length) : [];
   const activeLookupTab = availableLookupTabs.some((tab) => tab.id === lookupTab) ? lookupTab : availableLookupTabs[0]?.id || "context";
@@ -700,72 +802,54 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
   }
 
   return <>
-  <div className={`reader-shell ${shelfOpen ? "shelf-open" : ""} ${wordbookOpen ? "wordbook-open" : ""} reading-mode-${readingMode} ${focusMode ? "focus-mode" : ""}`}>
-    {shelfOpen && <aside className="panel reader-navigator">
-      <div className="reader-nav-heading"><div><p className="eyebrow">READING SHELF</p><h2>精读书架</h2></div><button onClick={() => setFolderFormOpen((value) => !value)}>{folderFormOpen ? "取消" : "＋ 文件夹"}</button></div>
-      <select value={selectedCourseId} onChange={(event) => setSelectedCourseId(Number(event.target.value))} aria-label="选择阅读课程">
-        <option value="0">全部文章</option>
-        {readingCourses.map((course) => <option value={course.id} key={course.id}>{course.title}</option>)}
-      </select>
-      {folderFormOpen && <form className="reader-folder-form" onSubmit={(event) => { event.preventDefault(); void createFolder(); }}><input value={newFolderName} onChange={(event) => setNewFolderName(event.target.value)} placeholder="例如：经济学人" maxLength={60} /><button className="button primary">建立</button></form>}
-      <div className="reader-folder-list">
-        <section className={openFolderKey === "unfiled" ? "open" : ""}>
-          <div className="reader-folder-heading"><button onClick={() => setOpenFolderKey((key) => key === "unfiled" ? "" : "unfiled")}><span>{openFolderKey === "unfiled" ? "▾" : "▸"}</span><strong>未分类</strong><em>{unfiledArticles.length}</em></button></div>
-          {openFolderKey === "unfiled" && <div className="reader-article-list">{renderArticleItems(unfiledArticles)}{!unfiledArticles.length && <small className="reader-folder-empty">新导入文章默认放在这里</small>}</div>}
-        </section>
-        {folders.map((folder) => {
-          const key = `folder-${folder.id}`;
-          const items = readableResources.filter((resource) => resource.readingFolderId === folder.id);
-          return <section className={openFolderKey === key ? "open" : ""} key={folder.id}>
-            <div className="reader-folder-heading"><button onClick={() => setOpenFolderKey((current) => current === key ? "" : key)}><span>{openFolderKey === key ? "▾" : "▸"}</span><strong>{folder.name}</strong><em>{items.length}</em></button><span className="reader-folder-menu"><button className="ellipsis-button" onClick={() => setFolderMenuId((current) => current === folder.id ? null : folder.id)} aria-label={`管理文件夹 ${folder.name}`}>⋯</button>{folderMenuId === folder.id && <span><button onClick={() => { setFolderMenuId(null); void renameFolder(folder); }}>重命名</button><button onClick={() => { setFolderMenuId(null); void deleteFolder(folder); }}>删除文件夹</button></span>}</span></div>
-            {openFolderKey === key && <div className="reader-article-list">{renderArticleItems(items)}{!items.length && <small className="reader-folder-empty">可从资源库或未分类中添加文章</small>}</div>}
-          </section>;
-        })}
-      </div>
-      <div className="reader-toc-heading"><p className="eyebrow">OUTLINE</p><h3>章节目录</h3><span>智能排版已保留</span></div>
-      <nav className="reader-toc" aria-label="文章章节目录">
-        {document.sections.map((section) => <button key={section.id} onClick={() => jumpToSection(section.id)}>{section.title}</button>)}
-      </nav>
+  <div className={`reader-shell reader-theme-${readerTheme} reader-spacing-${paragraphSpacing} ${shelfOpen ? "shelf-open" : ""} ${wordbookOpen ? "wordbook-open" : ""} reading-mode-${readingMode} ${focusMode ? "focus-mode" : ""} ${toolbarCompact ? "toolbar-compact" : ""} ${toolbarVisible ? "toolbar-visible" : "toolbar-hidden"}`} onPointerDown={(event) => { if (event.pointerType !== "touch" && !window.matchMedia("(max-width: 760px)").matches) revealToolbar(); }}>
+    <span className="reader-toolbar-sensor" onMouseEnter={revealToolbar} aria-hidden="true" />
+    {shelfOpen && <button className="reader-drawer-backdrop" onClick={() => setShelfOpen(false)} aria-label="关闭阅读书架" />}
+    {shelfOpen && <aside className="reader-navigator reader-drawer">
+      <div className="reader-nav-heading"><div><p className="eyebrow">READING</p><h2>阅读导航</h2></div><button onClick={() => setShelfOpen(false)} aria-label="关闭阅读导航">×</button></div>
+      <nav className="reader-drawer-tabs"><button className={shelfTab === "articles" ? "active" : ""} onClick={() => setShelfTab("articles")}>文章</button><button className={shelfTab === "outline" ? "active" : ""} onClick={() => setShelfTab("outline")}>目录</button></nav>
+      {shelfTab === "articles" ? <>
+        <select value={selectedCourseId} onChange={(event) => setSelectedCourseId(Number(event.target.value))} aria-label="选择阅读课程"><option value="0">全部文章</option>{readingCourses.map((course) => <option value={course.id} key={course.id}>{course.title}</option>)}</select>
+        <button className="reader-new-folder-button" onClick={() => setFolderFormOpen((value) => !value)}>{folderFormOpen ? "取消新建" : "＋ 新建文件夹"}</button>
+        {folderFormOpen && <form className="reader-folder-form" onSubmit={(event) => { event.preventDefault(); void createFolder(); }}><input value={newFolderName} onChange={(event) => setNewFolderName(event.target.value)} placeholder="例如：经济学人" maxLength={60} /><button className="button primary">建立</button></form>}
+        <div className="reader-folder-list">
+          <section className={openFolderKey === "unfiled" ? "open" : ""}><div className="reader-folder-heading"><button onClick={() => setOpenFolderKey((key) => key === "unfiled" ? "" : "unfiled")}><span>{openFolderKey === "unfiled" ? "▾" : "▸"}</span><strong>未分类</strong><em>{unfiledArticles.length}</em></button></div>{openFolderKey === "unfiled" && <div className="reader-article-list">{renderArticleItems(unfiledArticles)}{!unfiledArticles.length && <small className="reader-folder-empty">新导入文章默认放在这里</small>}</div>}</section>
+          {folders.map((folder) => { const key = `folder-${folder.id}`; const items = readableResources.filter((resource) => resource.readingFolderId === folder.id); return <section className={openFolderKey === key ? "open" : ""} key={folder.id}><div className="reader-folder-heading"><button onClick={() => setOpenFolderKey((current) => current === key ? "" : key)}><span>{openFolderKey === key ? "▾" : "▸"}</span><strong>{folder.name}</strong><em>{items.length}</em></button></div>{openFolderKey === key && <div className="reader-article-list">{renderArticleItems(items)}{!items.length && <small className="reader-folder-empty">可从资源库添加文章</small>}</div>}</section>; })}
+        </div>
+      </> : <><div className="reader-toc-heading"><p className="eyebrow">OUTLINE</p><h3>文章目录</h3></div><nav className="reader-toc" aria-label="文章章节目录">{articleDocument.sections.filter((section) => section.title).map((section) => <button key={section.id} onClick={() => { jumpToSection(section.id); setShelfOpen(false); }}>{section.title}</button>)}{!articleDocument.sections.some((section) => section.title) && <small className="reader-folder-empty">原文没有章节标题，不会自动制造目录。</small>}</nav></>}
     </aside>}
 
     <section className="panel reader-main">
-      <header className="reader-toolbar">
-        <div className="reader-title"><span>{readingResource.category}</span><h1>{readingResource.title}</h1><small>{progressLabel(selectedProgress?.progressRatio || 0)} · Markdown 阅读器 v1</small></div>
-        <div className="reader-controls">
-          <div className="reader-segment reader-mode-switch" aria-label="阅读方式">
-            <button className={readingMode === "frame" ? "active" : ""} onClick={() => changeReadingMode("frame")}>框内</button>
-            <button className={readingMode === "page" ? "active" : ""} onClick={() => changeReadingMode("page")}>页面</button>
-          </div>
-          <div className="reader-segment" aria-label="翻译显示方式">
-            <button className={translationMode === "original" ? "active" : ""} onClick={() => setTranslationMode("original")}>原文</button>
-            <button className={translationMode === "bilingual" ? "active" : ""} onClick={() => setTranslationMode("bilingual")} disabled={!document.hasTranslation}>双语</button>
-            <button className={translationMode === "translation" ? "active" : ""} onClick={() => setTranslationMode("translation")} disabled={!document.hasTranslation}>译文</button>
-          </div>
-          <div className="reader-segment" aria-label="文章字号">
-            <button onClick={() => setFontSize((value) => Math.max(14, value - 1))}>A−</button><button onClick={() => setFontSize((value) => Math.min(30, value + 1))}>A＋</button>
-          </div>
-          <span className="reader-settings-wrap"><button className="button secondary" onClick={() => setSettingsOpen((value) => !value)} aria-expanded={settingsOpen}>阅读设置 ▾</button>{settingsOpen && <span className="reader-settings-popover"><label>文章字体<select value={fontFamily} onChange={(event) => setFontFamily(event.target.value)}><option value="serif">衬线字体</option><option value="sans">无衬线字体</option></select></label><label>文章行距<select value={lineHeight} onChange={(event) => setLineHeight(Number(event.target.value))}><option value="1.65">紧凑</option><option value="1.9">舒适</option><option value="2.15">宽松</option></select></label><label>正文版心<select value={contentWidth} onChange={(event) => setContentWidth(event.target.value)}><option value="narrow">窄版</option><option value="standard">标准</option><option value="wide">宽版</option></select></label></span>}</span>
-          <button className={`button secondary ${shelfOpen ? "active" : ""}`} onClick={() => setShelfOpen((value) => !value)}>书架</button>
-          <button className={`button secondary ${wordbookOpen ? "active" : ""}`} onClick={() => setWordbookOpen((value) => !value)}>词典</button>
-          <button className={`button secondary ${focusMode ? "active" : ""}`} onClick={() => setFocusMode((value) => !value)}>⛶ 专注阅读</button>
+      <header className="reader-toolbar" aria-label="阅读工具栏">
+        <div className="reader-toolbar-primary">
+          <button className="reader-icon-button" onClick={() => focusMode ? setFocusMode(false) : window.scrollTo({ top: 0, behavior: "smooth" })} aria-label={focusMode ? "退出沉浸阅读" : "回到文章顶部"}>←</button>
+          <strong className="reader-toolbar-progress">{progressLabel(selectedProgress?.progressRatio || 0)}</strong>
+          <select className="reader-translation-select" value={translationMode} onChange={(event) => setTranslationMode(event.target.value as TranslationMode)} aria-label="翻译显示方式"><option value="original">原文</option><option value="tap" disabled={!articleDocument.hasTranslation}>点按译文</option><option value="bilingual" disabled={!articleDocument.hasTranslation}>双语</option><option value="translation" disabled={!articleDocument.hasTranslation}>译文</option></select>
+          <span className="reader-settings-wrap"><button className="reader-icon-button" onClick={() => { setSettingsOpen((value) => !value); setMoreOpen(false); }} aria-expanded={settingsOpen} aria-label="阅读设置">Aa</button>{settingsOpen && <span className="reader-settings-popover"><label>主题<select value={readerTheme} onChange={(event) => setReaderTheme(event.target.value as ReaderTheme)}><option value="paper">纸张</option><option value="white">白色</option><option value="dark">深色</option></select></label><label>文章字体<select value={fontFamily} onChange={(event) => setFontFamily(event.target.value)}><option value="serif">Serif</option><option value="sans">Sans</option></select></label><span className="reader-setting-group"><span>字号</span><span className="reader-font-stepper"><button onClick={() => setFontSize((value) => Math.max(14, value - 1))}>A−</button><span>{fontSize}px</span><button onClick={() => setFontSize((value) => Math.min(30, value + 1))}>A＋</button></span></span><label>文章行距<select value={lineHeight} onChange={(event) => setLineHeight(Number(event.target.value))}><option value="1.65">紧凑</option><option value="1.9">舒适</option><option value="2.15">宽松</option></select></label><label>正文宽度<select value={contentWidth} onChange={(event) => setContentWidth(event.target.value)}><option value="narrow">窄版</option><option value="standard">标准</option><option value="wide">宽版</option></select></label><label>段间距<select value={paragraphSpacing} onChange={(event) => setParagraphSpacing(event.target.value)}><option value="compact">紧凑</option><option value="standard">标准</option><option value="wide">宽松</option></select></label></span>}</span>
+          <button className="reader-icon-button" onClick={() => { setShelfTab("articles"); setShelfOpen(true); }} aria-label="打开书架">☰</button>
+          <button className={`reader-focus-button ${focusMode ? "active" : ""}`} onClick={() => { setFocusMode((value) => !value); setShelfOpen(false); setWordbookOpen(false); }}>沉浸阅读</button>
+          <span className="reader-more-wrap"><button className="reader-icon-button" onClick={() => { setMoreOpen((value) => !value); setSettingsOpen(false); }} aria-expanded={moreOpen} aria-label="更多阅读操作">⋯</button>{moreOpen && <span className="reader-more-menu"><button onClick={() => { changeReadingMode(readingMode === "page" ? "frame" : "page"); setMoreOpen(false); }}>{readingMode === "page" ? "切换到框内工作台" : "切换到页面阅读"}</button><button onClick={() => { setShelfTab("articles"); setShelfOpen(true); setMoreOpen(false); }}>打开书架</button><button onClick={() => { setShelfTab("outline"); setShelfOpen(true); setMoreOpen(false); }}>文章目录</button><button onClick={() => { setWordbookOpen(true); setMoreOpen(false); }}>完整词典</button><button onClick={() => void toggleFullscreen()}>{fullscreen ? "退出全屏" : "进入全屏"}</button><button onClick={() => { setSettingsOpen(true); setMoreOpen(false); }}>阅读设置</button></span>}</span>
         </div>
         <div className="reader-progress-track"><span style={{ width: `${Math.round((selectedProgress?.progressRatio || 0) * 100)}%` }} /></div>
       </header>
-      <div className={`reader-scroll reader-font-${fontFamily} reader-width-${contentWidth}`} style={readerStyle} ref={scrollRef} role="textbox" aria-label="文章正文，可选择英文单词、短语或句子" aria-readonly="true" aria-multiline="true" tabIndex={0} onScroll={() => { if (readingMode === "frame") handleScroll(); setSelectionAction(null); }} onMouseUp={captureSelection} onTouchEnd={captureSelection} onKeyUp={captureSelection}>
+      <div className={`reader-scroll reader-font-${fontFamily} reader-width-${contentWidth}`} style={readerStyle} ref={scrollRef} role="textbox" aria-label="文章正文，可选择英文单词、短语或句子" aria-readonly="true" aria-multiline="true" tabIndex={0} onScroll={() => { if (readingMode === "frame") handleScroll(); setSelectionAction(null); }} onMouseUp={captureSelection} onTouchEnd={captureSelection} onKeyUp={captureSelection} onClick={() => { if (window.matchMedia("(max-width: 760px)").matches && window.getSelection()?.isCollapsed) setToolbarVisible((value) => !value); }}>
         {readerLoading ? <div className="empty-state">正在读取并优化文章排版…</div> : <article className="reader-article">
-          {document.sections.map((section) => <section id={section.id} data-reader-section data-section-id={section.id} key={section.id}>
-            <h2>{section.title}</h2>
+          <header className="reader-article-header"><h1>{readingResource.title}</h1>{subtitle && subtitle !== readingResource.title && <p>{subtitle}</p>}<div><strong>{articleSource(readingResource)}</strong>{frontmatter.author && <span>By {frontmatter.author}</span>}<span>{[articleDate, `${readingMinutes} min read`].filter(Boolean).join(" · ")}</span></div></header>
+          {articleDocument.sections.map((section) => <section id={section.id} data-reader-section data-section-id={section.id} key={section.id}>
+            {section.title && <h2>{section.title}</h2>}
             {translationMode === "original" && section.originalBlocks.map((block, index) => <MarkdownBlock key={index} markdown={block} className="reader-block" />)}
+            {translationMode === "tap" && section.originalBlocks.map((block, index) => { const key = `${section.id}-${index}`; const revealed = revealedTranslations.has(key); return <div className={`reader-tap-pair ${revealed ? "revealed" : ""}`} key={key}><MarkdownBlock markdown={block} className="reader-original" />{section.translationBlocks[index] && <><button className="reader-tap-translation-button" onClick={() => toggleTapTranslation(key)}>{revealed ? "隐藏译文" : "点按译文"}</button>{revealed && <MarkdownBlock markdown={section.translationBlocks[index]} className="reader-translation" />}</>}</div>; })}
             {translationMode === "translation" && section.translationBlocks.map((block, index) => <MarkdownBlock key={index} markdown={block} className="reader-block reader-translation" />)}
             {translationMode === "bilingual" && section.originalBlocks.map((block, index) => <div className="reader-bilingual-pair" data-reader-block key={index}><MarkdownBlock markdown={block} className="reader-original" />{section.translationBlocks[index] && <MarkdownBlock markdown={section.translationBlocks[index]} className="reader-translation" />}</div>)}
           </section>)}
-          {!document.sections.length && <div className="empty-state">文章正文为空，可在资源库编辑Markdown后重新打开。</div>}
+          {!articleDocument.sections.length && <div className="empty-state">文章正文为空，可在资源库编辑Markdown后重新打开。</div>}
         </article>}
       </div>
     </section>
 
+    {quickLookupOpen && lookup && <aside className="reader-quick-lookup" style={{ top: quickLookupPosition.top, left: quickLookupPosition.left }} aria-live="polite"><button className="reader-quick-close" onClick={() => setQuickLookupOpen(false)} aria-label="关闭释义">×</button><div><strong>{lookup.word}</strong>{lookup.phonetic && <span>{lookup.phonetic}</span>}</div><p>{lookupLoading ? "正在查询当前语境…" : lookup.dictionaryDefinition || lookup.aiDetails.context?.[0] || "暂未查询到核心释义"}</p><footer><button disabled={lookupLoading} onClick={() => void addLookupToWordbook()}>保存</button><button onClick={() => { setQuickLookupOpen(false); setWordbookOpen(true); }}>更多</button></footer></aside>}
     {wordbookOpen && <button className="reader-dictionary-backdrop" onClick={() => setWordbookOpen(false)} aria-label="关闭阅读词典" />}
-    {wordbookOpen && <aside className="panel reader-dictionary">
+    {wordbookOpen && <aside className="reader-dictionary reader-drawer">
       <div className="reader-dictionary-heading"><div><p className="eyebrow">CONTEXT DICTIONARY</p><h2>随读词典</h2><p>选中正文中的单词或短语，解释只针对当前词项和原句语境。</p></div><button onClick={() => setWordbookOpen(false)} aria-label="关闭阅读词典">×</button></div>
       {sentenceInsight ? <div className="reader-sentence-insight"><span>{sentenceInsight.action === "explain" ? "句子解释" : "句子翻译"}</span><blockquote>{sentenceInsight.text}</blockquote><p>{sentenceLoading ? "正在处理…" : sentenceInsight.result}</p></div> : lookup ? <div className="reader-word-detail">
         <div className="reader-word-title"><div><strong>{lookup.word}</strong><span>{lookup.phonetic}</span></div><i>{lookupLoading ? "查询中…" : lookup.aiEnhanced ? "AI 已结合本句" : "基础词典结果"}</i></div>
@@ -779,7 +863,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
     </aside>}
   </div>
   {selectionAction && <div className={`reader-selection-actions ${selectionAction.kind}`} style={{ top: selectionAction.top, left: selectionAction.left }} role="toolbar" aria-label={selectionAction.kind === "term" ? "选词操作" : "选句操作"} onMouseDown={(event) => event.preventDefault()}>
-    {selectionAction.kind === "term" ? <><button onClick={() => { const selection = selectionAction; setSelectionAction(null); void lookupWord(selection.text, selection.context, selection.anchor); }}>查词</button><button onClick={() => speakEnglish(selectionAction.text)}>朗读</button><button onClick={() => void saveSelection(selectionAction)}>保存</button></> : <><button onClick={() => void runSentenceAction("explain", selectionAction)}>解释</button><button onClick={() => void runSentenceAction("translate", selectionAction)}>翻译</button><button onClick={() => speakEnglish(selectionAction.text)} title="使用浏览器 SpeechSynthesis 朗读">朗读</button><button disabled title="跟读请在口语训练中完成">跟读</button><button disabled title="听写需要STT Provider">听写</button><button onClick={() => void saveSelection(selectionAction)}>保存</button></>}
+    {selectionAction.kind === "term" ? <><button onClick={() => { const selection = selectionAction; setSelectionAction(null); void lookupWord(selection.text, selection.context, selection.anchor, { top: Math.min(window.innerHeight - 210, selection.top + 48), left: selection.left }); }}>查词</button><button onClick={() => speakEnglish(selectionAction.text)}>朗读</button><button onClick={() => void saveSelection(selectionAction)}>保存</button></> : <><button onClick={() => void runSentenceAction("explain", selectionAction)}>解释</button><button onClick={() => void runSentenceAction("translate", selectionAction)}>翻译</button><button onClick={() => speakEnglish(selectionAction.text)} title="使用浏览器 SpeechSynthesis 朗读">朗读</button><button disabled title="跟读请在口语训练中完成">跟读</button><button disabled title="听写需要STT Provider">听写</button><button onClick={() => void saveSelection(selectionAction)}>保存</button></>}
   </div>}
   </>;
 }

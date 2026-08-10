@@ -1,6 +1,9 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { LEARNING_USES, RESOURCE_TYPES, parseResourceMetadata, resourceTypeLabel, type LearningUse, type ResourceType } from "./resource-model";
 import type { ReadingFolderItem, ReadingProgressItem, ResourceItem } from "./types";
 
@@ -14,6 +17,7 @@ type Props = {
 };
 
 type LibraryTab = "all" | "inbox" | "favorite" | "archived";
+type ResourceSort = "added" | "studied" | "title-asc" | "title-desc" | "progress" | "custom";
 
 async function jsonRequest<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options);
@@ -24,6 +28,27 @@ async function jsonRequest<T>(url: string, options?: RequestInit): Promise<T> {
 
 function statusLabel(status: string) {
   return ({ queued: "排队中", waiting: "等待处理", processing: "处理中", review_required: "待复核", needs_provider: "待配置", failed: "失败", sync_pending: "待同步", ready: "可学习" } as Record<string, string>)[status] || status;
+}
+
+function SortableFolderRow({ folder, active, menuOpen, editing, editName, onSelect, onMenu, onEditName, onSaveRename, onCancelRename, onDelete }: {
+  folder: ReadingFolderItem;
+  active: boolean;
+  menuOpen: boolean;
+  editing: boolean;
+  editName: string;
+  onSelect: () => void;
+  onMenu: () => void;
+  onEditName: (value: string) => void;
+  onSaveRename: () => void;
+  onCancelRename: () => void;
+  onDelete: () => void;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: folder.id });
+  return <div className={`resource-folder-row ${active ? "active" : ""} ${isDragging ? "dragging" : ""}`} ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition }}>
+    <button className="folder-drag-handle" {...attributes} {...listeners} aria-label={`拖动文件夹 ${folder.name}`}>☰</button>
+    {editing ? <form onSubmit={(event) => { event.preventDefault(); onSaveRename(); }}><input value={editName} onChange={(event) => onEditName(event.target.value)} maxLength={60} aria-label="新文件夹名称" /><button>保存</button><button type="button" onClick={onCancelRename}>取消</button></form> : <button className="folder-name-button" onClick={onSelect}><strong>{folder.name}</strong><span>{folder.resourceCount}</span></button>}
+    {!editing && <span className="resource-folder-actions"><button onClick={onMenu} aria-label={`管理文件夹 ${folder.name}`}>⋯</button>{menuOpen && <span><button onClick={onSaveRename}>重命名</button><button onClick={onDelete}>删除</button></span>}</span>}
+  </div>;
 }
 
 function ResourceImportModal({ folders, onClose, onDone, onNotice }: { folders: ReadingFolderItem[]; onClose: () => void; onDone: () => Promise<void>; onNotice: (message: string) => void }) {
@@ -117,12 +142,19 @@ export default function ResourceLibrary({ resources, onRead, onStartLearning, on
   const [folderId, setFolderId] = useState(0);
   const [status, setStatus] = useState("");
   const [tag, setTag] = useState("");
+  const [sort, setSort] = useState<ResourceSort>("added");
   const [folders, setFolders] = useState<ReadingFolderItem[]>([]);
   const [progress, setProgress] = useState<Record<number, ReadingProgressItem>>({});
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [importOpen, setImportOpen] = useState(false);
   const [detail, setDetail] = useState<ResourceItem | null>(null);
   const [newFolder, setNewFolder] = useState("");
+  const [folderMenuId, setFolderMenuId] = useState<number | null>(null);
+  const [editingFolderId, setEditingFolderId] = useState<number | null>(null);
+  const [editingFolderName, setEditingFolderName] = useState("");
+  const [rowMenuId, setRowMenuId] = useState<number | null>(null);
+  const [rowTagDraft, setRowTagDraft] = useState("");
+  const folderSensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
 
   async function loadSupportingData() {
     const [folderData, progressData] = await Promise.all([jsonRequest<{ folders: ReadingFolderItem[] }>("/api/reading-folders"), jsonRequest<{ progress: ReadingProgressItem[] }>("/api/reading-progress")]);
@@ -142,7 +174,14 @@ export default function ResourceLibrary({ resources, onRead, onStartLearning, on
     if (status && item.processingStatus !== status) return false;
     if (tag && !item.tags.includes(tag)) return false;
     return `${item.title} ${item.description} ${item.sourceName} ${item.tags.join(" ")}`.toLowerCase().includes(search.trim().toLowerCase());
-  }), [folderId, library, search, status, tab, tag, type]);
+  }).sort((first, second) => {
+    if (sort === "title-asc") return first.title.localeCompare(second.title, "en");
+    if (sort === "title-desc") return second.title.localeCompare(first.title, "en");
+    if (sort === "studied") return String(progress[second.id]?.lastReadAt || "").localeCompare(String(progress[first.id]?.lastReadAt || ""));
+    if (sort === "progress") return (progress[second.id]?.progressRatio || 0) - (progress[first.id]?.progressRatio || 0);
+    if (sort === "custom") return first.sortOrder - second.sortOrder || first.id - second.id;
+    return String(second.createdAt || "").localeCompare(String(first.createdAt || "")) || second.id - first.id;
+  }), [folderId, library, progress, search, sort, status, tab, tag, type]);
 
   async function batch(action: string, extra: Record<string, unknown> = {}) {
     if (!selectedIds.length) return;
@@ -153,12 +192,54 @@ export default function ResourceLibrary({ resources, onRead, onStartLearning, on
     try { await jsonRequest("/api/reading-folders", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: newFolder }) }); setNewFolder(""); await loadSupportingData(); onNotice("资源文件夹已建立"); } catch (error) { onNotice((error as Error).message); }
   }
 
+  async function renameFolder(folder: ReadingFolderItem) {
+    if (editingFolderId !== folder.id) {
+      setEditingFolderId(folder.id); setEditingFolderName(folder.name); setFolderMenuId(null); return;
+    }
+    const name = editingFolderName.replace(/\s+/g, " ").trim();
+    if (!name) return;
+    try {
+      await jsonRequest("/api/reading-folders", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: folder.id, name }) });
+      setEditingFolderId(null); await loadSupportingData(); onNotice("文件夹名称已更新");
+    } catch (error) { onNotice((error as Error).message); }
+  }
+
+  async function deleteFolder(folder: ReadingFolderItem) {
+    if (!window.confirm(`删除“${folder.name}”文件夹？其中资源会回到“未分类”，资源本身不会被删除。`)) return;
+    try {
+      await jsonRequest(`/api/reading-folders?id=${folder.id}`, { method: "DELETE" });
+      if (folderId === folder.id) setFolderId(-1);
+      setFolderMenuId(null); await Promise.all([onReloadResources(), loadSupportingData()]); onNotice("文件夹已删除，资源已回到未分类");
+    } catch (error) { onNotice((error as Error).message); }
+  }
+
+  async function reorderFolders(event: DragEndEvent) {
+    if (!event.over || event.active.id === event.over.id) return;
+    const previous = folders;
+    const oldIndex = folders.findIndex((folder) => folder.id === Number(event.active.id));
+    const newIndex = folders.findIndex((folder) => folder.id === Number(event.over?.id));
+    if (oldIndex < 0 || newIndex < 0) return;
+    const next = arrayMove(folders, oldIndex, newIndex).map((folder, index) => ({ ...folder, sortOrder: index }));
+    setFolders(next);
+    try {
+      await jsonRequest("/api/reading-folders", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ orderedIds: next.map((folder) => folder.id) }) });
+      onNotice("文件夹顺序已保存");
+    } catch (error) { setFolders(previous); onNotice((error as Error).message); }
+  }
+
+  async function patchResource(resource: ResourceItem, change: Record<string, unknown>, message: string) {
+    try {
+      await jsonRequest("/api/resources", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: resource.id, ...change }) });
+      setRowMenuId(null); await Promise.all([onReloadResources(), loadSupportingData()]); onNotice(message);
+    } catch (error) { onNotice((error as Error).message); }
+  }
+
   return <section><div className="page-heading"><div><p className="eyebrow">RESOURCE LIBRARY 2.0</p><h1>资源库</h1><p>文章、PDF、图片、音视频、字幕、词库和词典共用一套资源核心；一个资源可以用于多种学习方式。</p></div><button className="button primary" onClick={() => setImportOpen(true)}>＋ 添加资源</button></div>
     <nav className="resource-tabs">{([['all','全部'],['inbox','待处理'],['favorite','收藏'],['archived','归档']] as const).map(([id,label]) => <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>{label}<span>{id === "all" ? library.filter((item) => item.status !== "archived").length : id === "archived" ? library.filter((item) => item.status === "archived").length : ""}</span></button>)}</nav>
-    <div className="panel resource-filterbar"><div className="search-box"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索标题、来源、标签…" /></div><select value={type} onChange={(event) => setType(event.target.value as ResourceType | "")}><option value="">全部类型</option>{RESOURCE_TYPES.map((item) => <option value={item} key={item}>{resourceTypeLabel(item)}</option>)}</select><select value={folderId} onChange={(event) => setFolderId(Number(event.target.value))}><option value="0">全部文件夹</option><option value="-1">未分类</option>{folders.map((folder) => <option value={folder.id} key={folder.id}>{folder.name}</option>)}</select><select value={tag} onChange={(event) => setTag(event.target.value)}><option value="">全部标签</option>{tags.map((item) => <option value={item} key={item}>{item}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option>{["queued","processing","review_required","needs_provider","failed","ready"].map((item) => <option value={item} key={item}>{statusLabel(item)}</option>)}</select></div>
-    <div className="resource-manager-layout"><aside className="panel resource-folder-panel"><h2>资源文件夹</h2><button className={folderId === 0 ? "active" : ""} onClick={() => setFolderId(0)}>全部资源 <span>{library.length}</span></button><button className={folderId === -1 ? "active" : ""} onClick={() => setFolderId(-1)}>未分类 <span>{library.filter((item) => !item.readingFolderId).length}</span></button>{folders.map((folder) => <button className={folderId === folder.id ? "active" : ""} key={folder.id} onClick={() => setFolderId(folder.id)}>{folder.name}<span>{folder.resourceCount}</span></button>)}<form onSubmit={(event) => { event.preventDefault(); void createFolder(); }}><input value={newFolder} onChange={(event) => setNewFolder(event.target.value)} placeholder="新文件夹" /><button>＋</button></form></aside>
+    <div className="panel resource-filterbar"><div className="search-box"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索标题、来源、标签…" /></div><select value={sort} onChange={(event) => setSort(event.target.value as ResourceSort)} aria-label="资源排序"><option value="added">最近添加</option><option value="studied">最近学习</option><option value="title-asc">标题 A-Z</option><option value="title-desc">标题 Z-A</option><option value="progress">学习进度</option><option value="custom">自定义</option></select><select value={type} onChange={(event) => setType(event.target.value as ResourceType | "")}><option value="">全部类型</option>{RESOURCE_TYPES.map((item) => <option value={item} key={item}>{resourceTypeLabel(item)}</option>)}</select><select value={folderId} onChange={(event) => setFolderId(Number(event.target.value))}><option value="0">全部文件夹</option><option value="-1">未分类</option>{folders.map((folder) => <option value={folder.id} key={folder.id}>{folder.name}</option>)}</select><select value={tag} onChange={(event) => setTag(event.target.value)}><option value="">全部标签</option>{tags.map((item) => <option value={item} key={item}>{item}</option>)}</select><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">全部状态</option>{["queued","processing","review_required","needs_provider","failed","ready"].map((item) => <option value={item} key={item}>{statusLabel(item)}</option>)}</select></div>
+    <div className="resource-manager-layout"><aside className="panel resource-folder-panel"><h2>资源文件夹</h2><button className={`resource-folder-fixed ${folderId === 0 ? "active" : ""}`} onClick={() => setFolderId(0)}>全部资源 <span>{library.length}</span></button><button className={`resource-folder-fixed ${folderId === -1 ? "active" : ""}`} onClick={() => setFolderId(-1)}>未分类 <span>{library.filter((item) => !item.readingFolderId).length}</span></button><DndContext sensors={folderSensors} collisionDetection={closestCenter} onDragEnd={(event) => void reorderFolders(event)}><SortableContext items={folders.map((folder) => folder.id)} strategy={verticalListSortingStrategy}><div className="resource-folder-sortable">{folders.map((folder) => <SortableFolderRow key={folder.id} folder={folder} active={folderId === folder.id} menuOpen={folderMenuId === folder.id} editing={editingFolderId === folder.id} editName={editingFolderName} onSelect={() => setFolderId(folder.id)} onMenu={() => setFolderMenuId((current) => current === folder.id ? null : folder.id)} onEditName={setEditingFolderName} onSaveRename={() => void renameFolder(folder)} onCancelRename={() => setEditingFolderId(null)} onDelete={() => void deleteFolder(folder)} />)}</div></SortableContext></DndContext><form className="resource-folder-create" onSubmit={(event) => { event.preventDefault(); void createFolder(); }}><input value={newFolder} onChange={(event) => setNewFolder(event.target.value)} placeholder="新建文件夹" /><button>＋</button></form></aside>
       <div className="resource-table-wrap"><div className="resource-batchbar"><label><input type="checkbox" checked={Boolean(filtered.length) && filtered.every((item) => selectedIds.includes(item.id))} onChange={(event) => setSelectedIds(event.target.checked ? filtered.map((item) => item.id) : [])} /> 已选 {selectedIds.length}</label>{selectedIds.length > 0 && <><select defaultValue="" onChange={(event) => { const value = Number(event.target.value); if (event.target.value) void batch("folder", { folderId: value || null }); event.currentTarget.value = ""; }}><option value="">移动到…</option><option value="0">未分类</option>{folders.map((folder) => <option value={folder.id} key={folder.id}>{folder.name}</option>)}</select><button onClick={() => { const tags = window.prompt("输入要添加的标签（逗号分隔）"); if (tags) void batch("addTags", { tags: tags.split(/[,，]/) }); }}>添加标签</button><button onClick={() => void batch("archive")}>归档</button></>}</div>
-        <div className="panel resource-table"><header><span></span><span>资源</span><span>类型 / 用途</span><span>状态</span><span>学习进度</span><span>操作</span></header>{filtered.map((item) => { const ratio = progress[item.id]?.progressRatio || 0; return <article key={item.id}><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={(event) => setSelectedIds((current) => event.target.checked ? [...new Set([...current, item.id])] : current.filter((id) => id !== item.id))} /><button className="resource-title-cell" onClick={() => setDetail(item)}><strong>{item.title}</strong><small>{item.sourceName || item.category}{item.tags.length ? ` · ${item.tags.slice(0,2).join(" / ")}` : ""}</small></button><div><span className="resource-type">{resourceTypeLabel(item.resourceType)}</span><small>{item.learningUses.join(" / ") || "未指定用途"}</small></div><span className={`processing-pill ${item.processingStatus}`}>{statusLabel(item.processingStatus)}</span><div className="resource-progress-cell"><i><em style={{ width: `${Math.round(ratio * 100)}%` }} /></i><small>{ratio ? `${Math.round(ratio * 100)}%` : "未开始"}</small></div><div className="resource-row-actions"><button className={item.isFavorite ? "active" : ""} onClick={() => void onToggleFavorite(item)}>★</button>{item.markdownObjectKey && <button onClick={() => onRead(item)}>阅读</button>}<button onClick={() => setDetail(item)}>详情</button></div></article>; })}{!filtered.length && <div className="empty-state"><strong>没有匹配资源</strong><span>调整筛选，或通过“添加资源”建立第一条记录。</span></div>}</div>
+        <div className="panel resource-table"><header><span></span><span>资源</span><span>类型 / 用途</span><span>状态</span><span>学习进度</span><span>操作</span></header>{filtered.map((item) => { const ratio = progress[item.id]?.progressRatio || 0; return <article key={item.id}><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={(event) => setSelectedIds((current) => event.target.checked ? [...new Set([...current, item.id])] : current.filter((id) => id !== item.id))} /><button className="resource-title-cell" onClick={() => setDetail(item)}><strong>{item.title}</strong><small>{item.sourceName || item.category}{item.tags.length ? ` · ${item.tags.slice(0,2).join(" / ")}` : ""}</small></button><div><span className="resource-type">{resourceTypeLabel(item.resourceType)}</span><small>{item.learningUses.join(" / ") || "未指定用途"}</small></div><span className={`processing-pill ${item.processingStatus}`}>{statusLabel(item.processingStatus)}</span><div className="resource-progress-cell"><i><em style={{ width: `${Math.round(ratio * 100)}%` }} /></i><small>{ratio ? `${Math.round(ratio * 100)}%` : "未开始"}</small></div><div className="resource-row-actions"><button className={item.isFavorite ? "active" : ""} onClick={() => void onToggleFavorite(item)}>★</button>{item.markdownObjectKey && <button onClick={() => onRead(item)}>阅读</button>}<button onClick={() => setDetail(item)}>详情</button><span className="resource-row-menu"><button onClick={() => { setRowMenuId((current) => current === item.id ? null : item.id); setRowTagDraft(item.tags.join(", ")); }} aria-label={`分类操作 ${item.title}`}>⋯</button>{rowMenuId === item.id && <span><label>移动到文件夹<select value={item.readingFolderId || 0} onChange={(event) => void patchResource(item, { readingFolderId: Number(event.target.value) || null }, "资源已移动到目标文件夹")}><option value="0">未分类</option>{folders.map((folder) => <option value={folder.id} key={folder.id}>{folder.name}</option>)}</select></label><label>标签<input value={rowTagDraft} onChange={(event) => setRowTagDraft(event.target.value)} placeholder="逗号分隔；删除文字即可移除" /></label><button onClick={() => void patchResource(item, { tags: rowTagDraft.split(/[,，]/) }, "资源标签已更新")}>保存标签</button><button onClick={() => void patchResource(item, { isFavorite: !item.isFavorite }, item.isFavorite ? "已取消收藏" : "已收藏")}>{item.isFavorite ? "取消收藏" : "收藏"}</button><button className="danger" onClick={() => void patchResource(item, { status: "archived" }, "资源已归档")}>归档</button></span>}</span></div></article>; })}{!filtered.length && <div className="empty-state"><strong>没有匹配资源</strong><span>调整筛选，或通过“添加资源”建立第一条记录。</span></div>}</div>
       </div></div>
     {importOpen && <ResourceImportModal folders={folders} onClose={() => setImportOpen(false)} onDone={async () => { await Promise.all([onReloadResources(), loadSupportingData()]); }} onNotice={onNotice} />}
     {detail && <ResourceDetailModal resource={resources.find((item) => item.id === detail.id) || detail} folders={folders} onClose={() => setDetail(null)} onChanged={async () => { await Promise.all([onReloadResources(), loadSupportingData()]); }} onStartLearning={onStartLearning} onNotice={onNotice} />}
