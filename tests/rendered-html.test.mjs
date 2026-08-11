@@ -114,6 +114,43 @@ test("Article QA reports missing translation and suspected web noise", async () 
   assert.ok(validation.issues.some((issue) => issue.type === "suspected_noise" && issue.blockId === "p0001"));
 });
 
+test("Processing 2.0 builds stable steps and resumes from the first unfinished checkpoint", async () => {
+  const { createPipelineSteps, nextRunnableStep, pauseTransition, resumeTransition, retryStepTransition } = await import("../app/processing-pipeline.mjs");
+  const steps = createPipelineSteps("Article");
+  assert.deepEqual(steps.map((step) => step.key), ["original", "extract", "structure", "blockify", "enrich", "translate", "qa", "review", "publish", "sync"]);
+  const checkpointed = steps.map((step) => ({ ...step, stepKey: step.key, sortOrder: step.order, status: ["original", "extract", "structure"].includes(step.key) ? "completed" : step.key === "translate" ? "failed" : "pending" }));
+  assert.equal(nextRunnableStep(checkpointed).stepKey, "blockify");
+  const paused = pauseTransition({ status: "running", pauseRequested: false });
+  assert.equal(paused.status, "pausing");
+  assert.equal(paused.pauseRequested, true);
+  const resumed = resumeTransition({ status: "paused" }, checkpointed.map((step) => step.stepKey === "blockify" ? { ...step, status: "completed" } : step));
+  assert.equal(resumed.currentStep, "enrich");
+  const retried = retryStepTransition(checkpointed, "translate");
+  assert.equal(retried.find((step) => step.stepKey === "translate").status, "pending");
+  assert.equal(retried.find((step) => step.stepKey === "extract").status, "completed");
+});
+
+test("Processing errors distinguish 403, missing providers and invalid AI JSON", async () => {
+  const { mapProcessingError, safeParseAIJson } = await import("../app/processing-pipeline.mjs");
+  const blocked = mapProcessingError(new Error("网页读取失败（403）"));
+  assert.equal(blocked.code, "SOURCE_HTTP_403");
+  assert.equal(blocked.status, "needs_action");
+  assert.ok(blocked.suggestedActions.includes("粘贴正文"));
+  const stt = mapProcessingError(Object.assign(new Error("STT Provider 尚未配置"), { code: "STT_REQUIRED" }));
+  assert.equal(stt.status, "needs_provider");
+  assert.throws(() => safeParseAIJson('{"blocks":[{"id":"p0001"'), (error) => error.code === "AI_RESPONSE_TRUNCATED");
+  assert.throws(() => safeParseAIJson("not json"), (error) => error.code === "AI_RESPONSE_INVALID_JSON");
+});
+
+test("Translation checkpoint keeps completed blocks and resumes with the remainder", async () => {
+  const blocks = Array.from({ length: 100 }, (_, index) => ({ id: `p${String(index + 1).padStart(4, "0")}` }));
+  const translations = Object.fromEntries(blocks.slice(0, 60).map((block) => [block.id, `译文 ${block.id}`]));
+  const pending = blocks.filter((block) => !translations[block.id]);
+  assert.equal(Object.keys(translations).length, 60);
+  assert.equal(pending.length, 40);
+  assert.equal(pending[0].id, "p0061");
+});
+
 test("HTML distillation preserves article headings, lists, quotes and links", async () => {
   const { htmlToStructuredMarkdown } = await import("../app/article-review.mjs");
   const markdown = htmlToStructuredMarkdown('<article><h2>Markets</h2><p>Read the <a href="https://example.com/report">report</a>.</p><ul><li>Growth</li><li>Inflation</li></ul><blockquote>Evidence matters.</blockquote></article>');

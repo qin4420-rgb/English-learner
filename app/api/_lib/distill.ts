@@ -2,6 +2,7 @@ import { extractText, getDocumentProxy } from "unpdf";
 import { getRuntimeBindings } from "@/app/api/_lib/runtime";
 import { htmlToStructuredMarkdown, inspectTranslationResult } from "@/app/article-review.mjs";
 import type { ReviewIssue } from "@/app/article-review.mjs";
+import { safeParseAIJson } from "@/app/processing-pipeline.mjs";
 
 export type DistilledDocument = {
   title: string;
@@ -175,10 +176,10 @@ async function aiEnrich(title: string, original: string): Promise<EnrichmentResu
     }),
   });
   const data = await response.json() as { choices?: { message?: { content?: string } }[]; error?: { message?: string } };
-  if (!response.ok) throw new Error(data.error?.message || "DeepSeek 内容整理失败");
+  if (!response.ok) throw Object.assign(new Error(data.error?.message || "DeepSeek 内容整理失败"), { code: "AI_HTTP_ERROR" });
   const content = data.choices?.[0]?.message?.content;
-  if (!content) throw new Error("DeepSeek 没有返回整理内容");
-  const parsed = JSON.parse(content) as Partial<EnrichmentResult>;
+  if (!content) throw Object.assign(new Error("DeepSeek 没有返回整理内容"), { code: "AI_RESPONSE_EMPTY" });
+  const parsed = safeParseAIJson<Partial<EnrichmentResult>>(content);
   return {
     title: String(parsed.title || title),
     summary: String(parsed.summary || ""),
@@ -223,10 +224,10 @@ async function requestBlockTranslations(batch: TranslationBlock[]) {
       }),
   });
   const data = await response.json() as { choices?: { message?: { content?: string } }[]; error?: { message?: string } };
-  if (!response.ok) throw new Error(data.error?.message || "DeepSeek 分段翻译失败");
+  if (!response.ok) throw Object.assign(new Error(data.error?.message || "DeepSeek 分段翻译失败"), { code: "AI_HTTP_ERROR" });
   const content = data.choices?.[0]?.message?.content;
-  if (!content) throw new Error("DeepSeek 没有返回分段翻译");
-  const parsed = JSON.parse(content) as { blocks?: { id?: string; translation?: string }[] };
+  if (!content) throw Object.assign(new Error("DeepSeek 没有返回分段翻译"), { code: "AI_RESPONSE_EMPTY" });
+  const parsed = safeParseAIJson<{ blocks?: { id?: string; translation?: string }[] }>(content);
   return parsed.blocks || [];
 }
 
@@ -243,7 +244,8 @@ export async function translateBlocksDetailed(blocks: TranslationBlock[]): Promi
         returned = await requestBlockTranslations(pending);
       } catch (error) {
         if (attempt === 2) {
-          protocolIssues.push(...pending.map((block) => ({ id: `translation-request-${block.id}`, blockId: block.id, severity: "error" as const, type: "translation_request_failed", message: `${block.id} 翻译请求重试后仍失败：${(error as Error).message}` })));
+          const errorCode = error && typeof error === "object" && "code" in error ? String(error.code) : "translation_request_failed";
+          protocolIssues.push(...pending.map((block) => ({ id: `translation-request-${block.id}`, blockId: block.id, severity: "error" as const, type: errorCode, message: `${block.id} 翻译请求重试后仍失败：${(error as Error).message}` })));
         }
         continue;
       }

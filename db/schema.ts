@@ -401,6 +401,14 @@ export const processingJobs = sqliteTable(
     stage: text("stage").notNull().default("等待处理"),
     progress: integer("progress").notNull().default(0),
     error: text("error").notNull().default(""),
+    currentStep: text("current_step").notNull().default("original"),
+    lastSuccessfulStep: text("last_successful_step").notNull().default(""),
+    pauseRequested: integer("pause_requested", { mode: "boolean" }).notNull().default(false),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    errorCode: text("error_code").notNull().default(""),
+    errorMessage: text("error_message").notNull().default(""),
+    errorDetailJson: text("error_detail_json").notNull().default("{}"),
+    suggestedActionsJson: text("suggested_actions_json").notNull().default("[]"),
     resultResourceId: integer("result_resource_id"),
     deleteOriginalOnSuccess: integer("delete_original_on_success", { mode: "boolean" })
       .notNull()
@@ -412,6 +420,35 @@ export const processingJobs = sqliteTable(
   (table) => [
     index("idx_jobs_owner_created").on(table.ownerId, table.createdAt),
     index("idx_jobs_owner_status").on(table.ownerId, table.status),
+  ],
+);
+
+export const processingJobSteps = sqliteTable(
+  "processing_job_steps",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    ownerId: text("owner_id").notNull(),
+    jobId: integer("job_id").notNull(),
+    stepKey: text("step_key").notNull(),
+    stepLabel: text("step_label").notNull(),
+    sortOrder: integer("sort_order").notNull(),
+    status: text("status").notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    progressCurrent: integer("progress_current").notNull().default(0),
+    progressTotal: integer("progress_total").notNull().default(0),
+    startedAt: text("started_at"),
+    completedAt: text("completed_at"),
+    errorCode: text("error_code").notNull().default(""),
+    errorMessage: text("error_message").notNull().default(""),
+    errorDetailJson: text("error_detail_json").notNull().default("{}"),
+    outputRef: text("output_ref").notNull().default(""),
+    detailJson: text("detail_json").notNull().default("{}"),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("idx_job_steps_owner_job_sort").on(table.ownerId, table.jobId, table.sortOrder),
+    uniqueIndex("idx_job_steps_owner_job_key").on(table.ownerId, table.jobId, table.stepKey),
   ],
 );
 

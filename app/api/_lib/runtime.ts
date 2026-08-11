@@ -325,6 +325,14 @@ export async function ensureDatabase(): Promise<void> {
         stage TEXT NOT NULL DEFAULT '等待处理',
         progress INTEGER NOT NULL DEFAULT 0,
         error TEXT NOT NULL DEFAULT '',
+        current_step TEXT NOT NULL DEFAULT 'original',
+        last_successful_step TEXT NOT NULL DEFAULT '',
+        pause_requested INTEGER NOT NULL DEFAULT 0,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        error_code TEXT NOT NULL DEFAULT '',
+        error_message TEXT NOT NULL DEFAULT '',
+        error_detail_json TEXT NOT NULL DEFAULT '{}',
+        suggested_actions_json TEXT NOT NULL DEFAULT '[]',
         result_resource_id INTEGER,
         delete_original_on_success INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -333,6 +341,29 @@ export async function ensureDatabase(): Promise<void> {
       )`),
       database.prepare("CREATE INDEX IF NOT EXISTS idx_jobs_owner_created ON processing_jobs(owner_id,created_at)"),
       database.prepare("CREATE INDEX IF NOT EXISTS idx_jobs_owner_status ON processing_jobs(owner_id,status)"),
+      database.prepare(`CREATE TABLE IF NOT EXISTS processing_job_steps (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_id TEXT NOT NULL,
+        job_id INTEGER NOT NULL,
+        step_key TEXT NOT NULL,
+        step_label TEXT NOT NULL,
+        sort_order INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        progress_current INTEGER NOT NULL DEFAULT 0,
+        progress_total INTEGER NOT NULL DEFAULT 0,
+        started_at TEXT,
+        completed_at TEXT,
+        error_code TEXT NOT NULL DEFAULT '',
+        error_message TEXT NOT NULL DEFAULT '',
+        error_detail_json TEXT NOT NULL DEFAULT '{}',
+        output_ref TEXT NOT NULL DEFAULT '',
+        detail_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`),
+      database.prepare("CREATE INDEX IF NOT EXISTS idx_job_steps_owner_job_sort ON processing_job_steps(owner_id,job_id,sort_order)"),
+      database.prepare("CREATE UNIQUE INDEX IF NOT EXISTS idx_job_steps_owner_job_key ON processing_job_steps(owner_id,job_id,step_key)"),
       database.prepare(`CREATE TABLE IF NOT EXISTS onedrive_connections (
         owner_id TEXT PRIMARY KEY,
         account_label TEXT NOT NULL DEFAULT '个人版 OneDrive',
@@ -390,6 +421,21 @@ export async function ensureDatabase(): Promise<void> {
       ] as const;
       for (const [name, statement] of uploadAdditions) {
         if (!availableUploadColumns.has(name)) await database.prepare(statement).run();
+      }
+      const jobColumns = await database.prepare("PRAGMA table_info(processing_jobs)").all();
+      const availableJobColumns = new Set((jobColumns.results as { name?: string }[]).map((column) => column.name));
+      const jobAdditions = [
+        ["current_step", "ALTER TABLE processing_jobs ADD COLUMN current_step TEXT NOT NULL DEFAULT 'original'"],
+        ["last_successful_step", "ALTER TABLE processing_jobs ADD COLUMN last_successful_step TEXT NOT NULL DEFAULT ''"],
+        ["pause_requested", "ALTER TABLE processing_jobs ADD COLUMN pause_requested INTEGER NOT NULL DEFAULT 0"],
+        ["attempt_count", "ALTER TABLE processing_jobs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0"],
+        ["error_code", "ALTER TABLE processing_jobs ADD COLUMN error_code TEXT NOT NULL DEFAULT ''"],
+        ["error_message", "ALTER TABLE processing_jobs ADD COLUMN error_message TEXT NOT NULL DEFAULT ''"],
+        ["error_detail_json", "ALTER TABLE processing_jobs ADD COLUMN error_detail_json TEXT NOT NULL DEFAULT '{}'"],
+        ["suggested_actions_json", "ALTER TABLE processing_jobs ADD COLUMN suggested_actions_json TEXT NOT NULL DEFAULT '[]'"],
+      ] as const;
+      for (const [name, statement] of jobAdditions) {
+        if (!availableJobColumns.has(name)) await database.prepare(statement).run();
       }
       const vocabularyColumns = await database.prepare("PRAGMA table_info(vocabulary)").all();
       const availableVocabularyColumns = new Set(

@@ -57,6 +57,13 @@
       "when": 1786372451952,
       "tag": "0007_unusual_dust",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1786416588495,
+      "tag": "0008_complex_corsair",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,13 @@
+export type PipelineStepKey = "original" | "extract" | "structure" | "blockify" | "enrich" | "translate" | "qa" | "review" | "publish" | "sync";
+export type ProcessingErrorPayload = { code: string; userMessage: string; technicalMessage: string; retryable: boolean; suggestedActions: string[]; status: string; detail: Record<string, unknown> };
+export const PIPELINE_STEPS: { key: PipelineStepKey; label: string; order: number }[];
+export const ACTIVE_JOB_STATUSES: Set<string>;
+export function normalizeJobStatus(status: string): string;
+export function createPipelineSteps(resourceType?: string, startAt?: PipelineStepKey): { key: PipelineStepKey; label: string; order: number; status: string; attemptCount: number; progressCurrent: number; progressTotal: number; resourceType: string }[];
+export function nextRunnableStep<T extends { status: string; sortOrder?: number; order?: number; stepKey?: string; key?: string }>(steps: T[]): T | undefined;
+export function resumeTransition<T>(job: T, steps: unknown[]): T & { status: string; pauseRequested: boolean; currentStep: string };
+export function pauseTransition<T>(job: T): T & { status: string; pauseRequested?: boolean };
+export function retryStepTransition<T>(steps: T[], stepKey: string): T[];
+export function detectTruncatedJson(value: string): boolean;
+export function safeParseAIJson<T = unknown>(value: string): T;
+export function mapProcessingError(error: unknown, context?: Record<string, unknown>): ProcessingErrorPayload;

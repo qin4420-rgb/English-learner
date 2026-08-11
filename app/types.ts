@@ -226,11 +226,42 @@ export type ProcessingJob = {
   stage: string;
   progress: number;
   error: string;
+  currentStep: string;
+  lastSuccessfulStep: string;
+  pauseRequested: boolean;
+  attemptCount: number;
+  errorCode: string;
+  errorMessage: string;
+  errorDetail: Record<string, unknown>;
+  suggestedActions: string[];
   resultResourceId: number | null;
   deleteOriginalOnSuccess: boolean;
   createdAt: string;
   updatedAt: string;
   completedAt: string;
+  legacy: boolean;
+  steps: ProcessingJobStep[];
+};
+
+export type ProcessingStepStatus = "pending" | "running" | "completed" | "failed" | "skipped" | "paused" | "needs_action" | "needs_provider";
+
+export type ProcessingJobStep = {
+  id: number;
+  jobId: number;
+  stepKey: string;
+  stepLabel: string;
+  sortOrder: number;
+  status: ProcessingStepStatus;
+  attemptCount: number;
+  progressCurrent: number;
+  progressTotal: number;
+  startedAt: string;
+  completedAt: string;
+  errorCode: string;
+  errorMessage: string;
+  errorDetail: Record<string, unknown>;
+  outputRef: string;
+  detail: Record<string, unknown>;
 };
 
 export type OneDriveStatus = {

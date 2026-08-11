@@ -1,25 +1,18 @@
 "use client";
 
-/* Dynamic resource names are the visible text for their wrapped checkboxes. */
+/* Dynamic source names are the visible text for their wrapped controls. */
 /* eslint-disable jsx-a11y/label-has-associated-control */
+/* The modal backdrop only offers an optional pointer shortcut; the close button remains the accessible control. */
+/* eslint-disable jsx-a11y/no-static-element-interactions */
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import ResourceReviewWorkspace from "./components/ResourceReviewWorkspace";
-import type { DictionarySourceItem, OneDriveStatus, ProcessingJob, ProviderStatus, ResourceItem, UploadItem } from "./types";
+import type { DictionarySourceItem, OneDriveStatus, ProcessingJob, ProcessingJobStep, ProviderStatus, ResourceItem, UploadItem } from "./types";
 
-type Props = {
-  oneDrive: OneDriveStatus | null;
-  aiConfigured: boolean;
-  providers: ProviderStatus[];
-  jobs: ProcessingJob[];
-  uploads: UploadItem[];
-  resources: ResourceItem[];
-  onReload: () => Promise<void>;
-  onNotice: (message: string) => void;
-  onExport: () => void;
-};
-
-type CenterTab = "processing" | "review" | "history" | "providers" | "data";
+type Props = { oneDrive: OneDriveStatus | null; aiConfigured: boolean; providers: ProviderStatus[]; jobs: ProcessingJob[]; uploads: UploadItem[]; resources: ResourceItem[]; onReload: () => Promise<void>; onNotice: (message: string) => void; onExport: () => void };
+type CenterSection = "processing" | "dictionaries" | "vocabulary" | "providers" | "data";
+type ProcessingTab = "queue" | "review" | "history";
+type AddMode = "file" | "url" | "paste";
 
 async function jsonRequest<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, options);
@@ -33,6 +26,14 @@ function dateText(value: string) {
   return new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(value.replace(" ", "T")));
 }
 
+const statusLabel: Record<string, string> = { queued: "排队中", running: "处理中", pausing: "等待暂停", paused: "已暂停", needs_action: "需要处理", needs_provider: "缺少能力", review_required: "待复核", failed: "失败", completed: "已完成", cancelled: "已取消" };
+const stepIcon: Record<string, string> = { completed: "✓", skipped: "−", running: "…", failed: "×", needs_action: "!", needs_provider: "!", paused: "Ⅱ", pending: "○" };
+
+function currentProgress(job: ProcessingJob) {
+  const step = job.steps.find((item) => item.stepKey === job.currentStep);
+  return step?.progressTotal ? `${step.progressCurrent} / ${step.progressTotal} ${["Audio", "Video"].includes(String(step.detail.resourceType || "")) ? "Segments" : "Blocks"}` : `${job.progress}%`;
+}
+
 function reviewInfo(resource: ResourceItem) {
   try {
     const metadata = JSON.parse(resource.metadataJson || "{}") as { review?: { issues?: { severity?: string }[]; translatedBlocks?: number; totalBlocks?: number } };
@@ -42,115 +43,128 @@ function reviewInfo(resource: ResourceItem) {
 }
 
 export default function MaintenanceCenter({ oneDrive, aiConfigured, providers, jobs, uploads, resources, onReload, onNotice, onExport }: Props) {
-  const [activeTab, setActiveTab] = useState<CenterTab>("processing");
+  const [section, setSection] = useState<CenterSection>("processing");
+  const [processingTab, setProcessingTab] = useState<ProcessingTab>("queue");
+  const [jobList, setJobList] = useState(jobs);
+  const [selectedJobId, setSelectedJobId] = useState(0);
+  const [selectedStepKey, setSelectedStepKey] = useState("");
   const [reviewResourceId, setReviewResourceId] = useState(0);
-  const [sourceUrl, setSourceUrl] = useState("");
-  const [urlCategory, setUrlCategory] = useState("收藏的网站文章");
-  const [fileCategory, setFileCategory] = useState("离线文章阅读");
-  const [processing, setProcessing] = useState(false);
-  const [selectedIds, setSelectedIds] = useState<number[]>([]);
-  const [batchCategory, setBatchCategory] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
+  const [addMode, setAddMode] = useState<AddMode>("file");
+  const [busy, setBusy] = useState(false);
+  const [runnerVersion, setRunnerVersion] = useState(0);
   const [dictionaries, setDictionaries] = useState<DictionarySourceItem[]>([]);
   const [dictionaryTest, setDictionaryTest] = useState("");
   const [dictionaryResult, setDictionaryResult] = useState("");
   const library = resources.filter((item) => item.collection === "library");
   const reviewResources = useMemo(() => library.filter((item) => item.processingStatus === "review_required"), [library]);
-  const activeJobs = useMemo(() => jobs.filter((job) => ["queued", "waiting", "processing", "needs_provider"].includes(job.status)), [jobs]);
+  const selectedJob = jobList.find((job) => job.id === selectedJobId) || null;
+  const selectedStep = selectedJob?.steps.find((step) => step.stepKey === selectedStepKey) || selectedJob?.steps.find((step) => step.stepKey === selectedJob.currentStep) || null;
 
-  async function loadDictionaries() {
-    const data = await jsonRequest<{ sources: DictionarySourceItem[] }>("/api/dictionaries");
-    setDictionaries(data.sources);
+  useEffect(() => { void jsonRequest<{ sources: DictionarySourceItem[] }>("/api/dictionaries").then((data) => setDictionaries(data.sources)).catch((error: Error) => onNotice(error.message)); }, [onNotice]);
+
+  useEffect(() => {
+    if (section !== "processing") return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      try {
+        let data = await jsonRequest<{ jobs: ProcessingJob[] }>("/api/processing");
+        if (stopped) return;
+        setJobList(data.jobs);
+        const runnable = data.jobs.find((job) => ["queued", "running", "pausing"].includes(job.status) && !job.legacy);
+        if (!runnable) return;
+        const result = await jsonRequest<{ status: string }>("/api/processing/run", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jobId: runnable.id }) });
+        data = await jsonRequest<{ jobs: ProcessingJob[] }>("/api/processing");
+        if (stopped) return;
+        setJobList(data.jobs);
+        if (result.status === "review_required") await onReload();
+        if (data.jobs.some((job) => ["queued", "running", "pausing"].includes(job.status))) timer = setTimeout(tick, 2400);
+      } catch (error) { if (!stopped) onNotice((error as Error).message); }
+    };
+    void tick();
+    return () => { stopped = true; if (timer) clearTimeout(timer); };
+  }, [section, runnerVersion, onReload, onNotice]);
+
+  const counts = useMemo(() => ({
+    running: jobList.filter((job) => ["queued", "running", "pausing"].includes(job.status)).length,
+    paused: jobList.filter((job) => job.status === "paused").length,
+    action: jobList.filter((job) => ["needs_action", "needs_provider"].includes(job.status)).length,
+    review: jobList.filter((job) => job.status === "review_required").length,
+    failed: jobList.filter((job) => job.status === "failed").length,
+  }), [jobList]);
+
+  async function refreshJobs() {
+    const data = await jsonRequest<{ jobs: ProcessingJob[] }>("/api/processing"); setJobList(data.jobs); setRunnerVersion((value) => value + 1);
   }
-  useEffect(() => { queueMicrotask(() => void loadDictionaries().catch((error: Error) => onNotice(error.message))); }, [onNotice]);
 
-  async function connectOneDrive() {
-    try { window.location.href = (await jsonRequest<{ authorizationUrl: string }>("/api/onedrive/connect", { method: "POST" })).authorizationUrl; }
-    catch (error) { onNotice((error as Error).message); }
-  }
-
-  async function disconnectOneDrive() {
-    if (!window.confirm("断开后不会删除OneDrive文件，但自动同步会停止。确定断开吗？")) return;
-    await jsonRequest("/api/onedrive/disconnect", { method: "POST" });
-    await onReload();
-  }
-
-  async function processUrl(event: FormEvent) {
-    event.preventDefault(); setProcessing(true);
+  async function jobAction(job: ProcessingJob, action: string, stepKey?: string) {
+    if (action === "restart" && !window.confirm("将建立一个全新的处理任务，并保留当前任务历史。确定从头重新处理吗？")) return;
     try {
-      await jsonRequest("/api/processing", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ inputType: "url", sourceUrl, category: urlCategory }) });
-      setSourceUrl(""); await onReload(); onNotice("网页正文已保存并进入复核草稿；发布前不会替换阅读器中的旧版本。");
-    } catch (error) { await onReload(); onNotice((error as Error).message); } finally { setProcessing(false); }
-  }
-
-  async function processFile(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const file = (form.elements.namedItem("source-file") as HTMLInputElement).files?.[0];
-    if (!file) return;
-    setProcessing(true);
-    try {
-      const body = new FormData(); body.append("files", file); body.append("tags", fileCategory);
-      await jsonRequest("/api/resources/import", { method: "POST", body });
-      form.reset(); await onReload(); onNotice("资源已进入处理队列；原文件保留，生成稿需要复核后才发布。");
-    } catch (error) { await onReload(); onNotice((error as Error).message); } finally { setProcessing(false); }
-  }
-
-  async function batchAction(action: "archive" | "category" | "hide") {
-    if (!selectedIds.length) return onNotice("请先勾选要维护的资源");
-    if (action === "archive" && !window.confirm(`确定归档选中的 ${selectedIds.length} 条资源记录吗？原始文件不会删除。`)) return;
-    try {
-      await jsonRequest("/api/resources/batch", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ids: selectedIds, action, category: batchCategory }) });
-      setSelectedIds([]); await onReload(); onNotice("批量维护已完成");
+      await jsonRequest("/api/processing", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: job.id, action, stepKey }) });
+      await refreshJobs(); onNotice(action === "pause" ? "已请求在安全点暂停" : action === "cancel" ? "任务已取消，原始资料仍然保留" : "任务状态已更新");
     } catch (error) { onNotice((error as Error).message); }
   }
 
-  async function jobAction(id: number, action: "retry" | "later") {
+  async function addResource(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setBusy(true);
     try {
-      await jsonRequest("/api/processing", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, action }) });
-      await onReload(); onNotice(action === "retry" ? "任务已重新处理" : "任务已标记为稍后复核");
-    } catch (error) { onNotice((error as Error).message); }
+      const form = new FormData(event.currentTarget);
+      if (addMode === "file") {
+        const file = form.get("file"); if (!(file instanceof File) || !file.size) throw new Error("请选择文件");
+        const body = new FormData(); body.append("files", file); body.append("tags", String(form.get("category") || "离线文章阅读"));
+        await jsonRequest("/api/resources/import", { method: "POST", body });
+      } else {
+        const sourceUrl = String(form.get("sourceUrl") || "").trim();
+        const pastedText = String(form.get("pastedText") || "").trim();
+        await jsonRequest("/api/processing", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ inputType: addMode, sourceUrl, pastedText, title: String(form.get("title") || ""), category: String(form.get("category") || "待整理") }) });
+      }
+      setAddOpen(false); await onReload(); await refreshJobs(); onNotice("资源与处理任务已经建立，可以关闭页面后稍后继续。");
+    } catch (error) { onNotice((error as Error).message); } finally { setBusy(false); }
   }
 
   async function updateDictionary(id: number, change: Record<string, unknown>) {
-    try { await jsonRequest("/api/dictionaries", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, ...change }) }); await loadDictionaries(); }
-    catch (error) { onNotice((error as Error).message); }
+    await jsonRequest("/api/dictionaries", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, ...change }) });
+    const data = await jsonRequest<{ sources: DictionarySourceItem[] }>("/api/dictionaries"); setDictionaries(data.sources);
   }
 
-  async function testDictionary() {
-    if (!dictionaryTest.trim()) return;
-    try {
-      const result = await jsonRequest<{ dictionaryDefinition: string; dictionarySource?: string }>("/api/vocabulary/lookup", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ word: dictionaryTest }) });
-      setDictionaryResult(`${result.dictionarySource || "基础词典"}：${result.dictionaryDefinition}`);
-    } catch (error) { onNotice((error as Error).message); }
-  }
+  if (reviewResourceId) return <ResourceReviewWorkspace resourceId={reviewResourceId} onClose={() => setReviewResourceId(0)} onPublished={async () => { await onReload(); await refreshJobs(); setReviewResourceId(0); }} onNotice={onNotice} />;
 
-  if (reviewResourceId) return <ResourceReviewWorkspace resourceId={reviewResourceId} onClose={() => setReviewResourceId(0)} onPublished={async () => { await onReload(); setReviewResourceId(0); }} onNotice={onNotice} />;
+  return <section className="maintenance-workspace">
+    <header className="maintenance-header"><div><p className="eyebrow">MAINTENANCE CENTER 2.0</p><h1>维护中心</h1><p>资料处理已经任务化；每一步都有记录，失败后可从断点继续。</p></div><button className="button secondary" onClick={onExport}>导出索引备份</button></header>
+    <div className="maintenance-shell">
+      <nav className="maintenance-secondary-nav" aria-label="维护中心二级导航">{([
+        ["processing", "▦", "资源处理"], ["dictionaries", "Aa", "词典管理"], ["vocabulary", "W", "单词数据"], ["providers", "⚙", "能力配置"], ["data", "↥", "数据与备份"],
+      ] as const).map(([id, icon, label]) => <button className={section === id ? "active" : ""} key={id} onClick={() => setSection(id)}><span>{icon}</span>{label}</button>)}</nav>
 
-  return <section>
-    <div className="page-heading"><div><p className="eyebrow">MAINTENANCE CENTER</p><h1>维护与资料处理中心</h1><p>上传、复核、发布和数据维护各自独立；草稿不会直接进入阅读器。</p></div><button className="button secondary" onClick={onExport}>导出索引备份</button></div>
-    <nav className="maintenance-tabs" aria-label="维护中心栏目">{([['processing','资料处理'],['review','待复核'],['history','处理记录'],['providers','能力配置'],['data','数据维护']] as const).map(([id, label]) => <button key={id} className={activeTab === id ? "active" : ""} onClick={() => setActiveTab(id)}>{label}{id === "review" && reviewResources.length > 0 ? ` ${reviewResources.length}` : ""}</button>)}</nav>
+      <main className="maintenance-main">
+        {section === "processing" && <>
+          <div className="processing-topbar"><div><h2>资源处理</h2><p>Runner 每次只推进一个安全工作单元，已完成内容实时保存。</p></div><button className="button primary" onClick={() => setAddOpen(true)}>＋ 添加资料</button></div>
+          <div className="processing-overview">{[["处理中", counts.running], ["已暂停", counts.paused], ["需要处理", counts.action], ["待复核", counts.review], ["失败", counts.failed]].map(([label, count]) => <article key={label}><strong>{count}</strong><span>{label}</span></article>)}</div>
+          <nav className="processing-subtabs">{(["queue", "review", "history"] as const).map((id) => <button className={processingTab === id ? "active" : ""} key={id} onClick={() => { setProcessingTab(id); setSelectedJobId(0); }}>{id === "queue" ? "任务队列" : id === "review" ? `待复核 ${reviewResources.length}` : "历史记录"}</button>)}</nav>
 
-    {activeTab === "processing" && <>
-      <div className="processing-grid">
-        <form className="panel processing-card" onSubmit={processFile}><div className="panel-heading"><div><p className="eyebrow">FILE TO REVIEW DRAFT</p><h2>上传文件并整理</h2><p>支持PDF、图片、Markdown、TXT与HTML；原文件保留，生成稿进入复核。</p></div></div><label className="drop-zone"><input name="source-file" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.md,.markdown,.txt,.html,.htm,text/*,application/pdf,image/*" required /><span>选择文件</span><small>单文件上限25MB</small></label><label><span>保存分类</span><select value={fileCategory} onChange={(event) => setFileCategory(event.target.value)}><option>离线文章阅读</option><option>课程资料</option><option>学习心得记录</option></select></label><button className="button primary" disabled={processing}>{processing ? "正在建立资源…" : "上传并进入处理队列"}</button></form>
-        <form className="panel processing-card" onSubmit={processUrl}><div className="panel-heading"><div><p className="eyebrow">WEB TO REVIEW DRAFT</p><h2>保存网页文章</h2><p>正文与结构转为Markdown；链接仅作来源标记。</p></div></div><label><span>文章网址</span><input type="url" required value={sourceUrl} onChange={(event) => setSourceUrl(event.target.value)} placeholder="https://…" /></label><label><span>保存分类</span><select value={urlCategory} onChange={(event) => setUrlCategory(event.target.value)}><option>收藏的网站文章</option><option>离线文章阅读</option><option>课程资料</option></select></label><label className="processing-rule"><input type="checkbox" checked readOnly /> 保存英文原文、译文草稿、摘要、主题与词汇候选</label><button className="button primary" disabled={processing}>{processing ? "正在读取并整理…" : "抓取网页并生成草稿"}</button></form>
-      </div>
-      <section className="panel jobs-panel"><div className="panel-heading"><div><p className="eyebrow">ACTIVE JOBS</p><h2>当前处理任务</h2><p>这里只显示正在运行或等待能力接口的任务。</p></div><span className="count-badge">{activeJobs.length} 项</span></div><div className="job-list">{activeJobs.map((job) => <article key={job.id}><span className={`job-state ${job.status}`}>…</span><div><strong>{job.sourceName}</strong><small>{job.stage}{job.error ? ` · ${job.error}` : ""}</small><i><b style={{ width: `${job.progress}%` }} /></i></div><em>{dateText(job.createdAt)}</em>{["failed", "needs_provider"].includes(job.status) && <div className="job-actions"><button onClick={() => void jobAction(job.id, "retry")}>重试</button></div>}</article>)}{!activeJobs.length && <div className="empty-state small">当前没有处理中的任务。</div>}</div></section>
-    </>}
+          {processingTab === "review" ? <div className="review-resource-list">{reviewResources.map((resource) => { const info = reviewInfo(resource); return <article key={resource.id}><div><strong>{resource.title}</strong><small>{info.translated}/{info.total} 译文块 · {info.errors} 错误 · {info.warnings} 警告</small></div><button className="button primary" onClick={() => setReviewResourceId(resource.id)}>打开复核</button></article>; })}{!reviewResources.length && <div className="empty-state">当前没有待复核文章。</div>}</div> : selectedJob ? <JobDetail job={selectedJob} selectedStep={selectedStep} onSelectStep={setSelectedStepKey} onBack={() => setSelectedJobId(0)} onAction={jobAction} onReview={(id) => setReviewResourceId(id)} onProviders={() => setSection("providers")} /> : <div className="processing-job-grid">{jobList.filter((job) => processingTab === "queue" ? !["completed", "cancelled"].includes(job.status) : ["completed", "cancelled", "failed", "review_required"].includes(job.status)).map((job) => <JobCard key={job.id} job={job} onDetail={() => { setSelectedJobId(job.id); setSelectedStepKey(job.currentStep); }} onAction={jobAction} onReview={(id) => setReviewResourceId(id)} onProviders={() => setSection("providers")} />)}{!jobList.length && <div className="empty-state">还没有处理任务。点击“添加资料”开始。</div>}</div>}
+        </>}
 
-    {activeTab === "review" && <section className="panel review-queue"><div className="panel-heading"><div><p className="eyebrow">REVIEW QUEUE</p><h2>待复核文章</h2><p>打开后可逐块编辑、局部重译、自动检查、AI审核、预览和发布。</p></div><span className="count-badge">{reviewResources.length} 篇</span></div><div className="review-resource-list">{reviewResources.map((resource) => { const info = reviewInfo(resource); return <article key={resource.id}><div><strong>{resource.title}</strong><small>{resource.sourceName || resource.sourceUrl || "文件导入"} · {info.translated}/{info.total} 译文块</small></div><span className={info.errors ? "error" : "ok"}>{info.errors} 错误 · {info.warnings} 警告</span><em>{resource.markdownObjectKey ? "旧版仍在线" : "尚未发布"}</em><button className="button primary" onClick={() => setReviewResourceId(resource.id)}>打开复核</button></article>; })}{!reviewResources.length && <div className="empty-state">没有待复核文章。新处理结果会先进入这里，不会直接出现在阅读器。</div>}</div></section>}
+        {section === "dictionaries" && <section className="panel dictionary-manager"><div className="panel-heading"><div><p className="eyebrow">DICTIONARIES</p><h2>词典管理</h2><p>维护本地词典顺序并测试实际查词结果。</p></div></div><div className="dictionary-source-list">{dictionaries.map((source) => <article key={source.id}><label><input type="checkbox" checked={source.enabled} onChange={(event) => void updateDictionary(source.id, { enabled: event.target.checked })} /><span><strong>{source.name}</strong><small>{source.entryCount} 条词目</small></span></label><div><button onClick={() => void updateDictionary(source.id, { direction: "up" })}>↑</button><button onClick={() => void updateDictionary(source.id, { direction: "down" })}>↓</button></div></article>)}</div><form className="dictionary-test" onSubmit={(event) => { event.preventDefault(); void jsonRequest<{ dictionaryDefinition: string; dictionarySource?: string }>("/api/vocabulary/lookup", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ word: dictionaryTest }) }).then((result) => setDictionaryResult(`${result.dictionarySource || "基础词典"}：${result.dictionaryDefinition}`)).catch((error: Error) => onNotice(error.message)); }}><input value={dictionaryTest} onChange={(event) => setDictionaryTest(event.target.value)} placeholder="输入英文单词测试" /><button className="button secondary">测试</button></form>{dictionaryResult && <p className="dictionary-test-result">{dictionaryResult}</p>}</section>}
 
-    {activeTab === "history" && <section className="panel jobs-panel"><div className="panel-heading"><div><p className="eyebrow">PROCESSING HISTORY</p><h2>处理记录</h2><p>失败、待复核与完成记录统一保留，失败不会删除原始资料。</p></div><span className="count-badge">{jobs.length} 项</span></div><div className="job-list">{jobs.map((job) => <article key={job.id}><span className={`job-state ${job.status}`}>{job.status === "complete" ? "✓" : job.status === "failed" ? "!" : job.status === "review_required" ? "?" : "…"}</span><div><strong>{job.sourceName}</strong><small>{job.stage}{job.error ? ` · ${job.error}` : ""}</small><i><b style={{ width: `${job.progress}%` }} /></i></div><em>{dateText(job.createdAt)}</em><div className="job-actions">{job.status === "review_required" && <button onClick={() => { if (job.resultResourceId) setReviewResourceId(job.resultResourceId); }}>打开复核</button>}{job.status === "review_required" && <button onClick={() => void jobAction(job.id, "later")}>稍后</button>}{["failed", "needs_provider"].includes(job.status) && <button onClick={() => void jobAction(job.id, "retry")}>重试</button>}</div></article>)}</div></section>}
+        {section === "vocabulary" && <section className="panel"><div className="panel-heading"><div><p className="eyebrow">VOCABULARY DATA</p><h2>单词数据</h2><p>本区保留给词表导入、词典映射与 FSRS 数据维护；本轮没有改动背单词算法。</p></div></div><div className="empty-state small">可继续通过资源导入 WordList；已有单词与复习记录保持不变。</div></section>}
 
-    {activeTab === "providers" && <>
-      <div className="system-status-grid"><article className={`panel system-card ${oneDrive?.connected ? "connected" : ""}`}><div className="system-card-icon">☁</div><div><span className="status-label">主要数据中心</span><h2>个人版 OneDrive</h2><p>{oneDrive?.connected ? `已连接：${oneDrive.accountLabel}` : oneDrive?.configured ? "应用已配置，等待微软授权" : "等待配置微软应用信息"}</p><small>{oneDrive?.connected ? `${oneDrive.appFolder} · 最近同步 ${dateText(oneDrive.lastSyncAt)}` : `回调地址：${oneDrive?.redirectUri || "加载中…"}`}</small></div>{oneDrive?.connected ? <button className="button secondary" onClick={() => void disconnectOneDrive()}>断开</button> : <button className="button primary" disabled={!oneDrive?.configured} onClick={() => void connectOneDrive()}>连接OneDrive</button>}</article><article className={`panel system-card ${aiConfigured ? "connected" : ""}`}><div className="system-card-icon">AI</div><div><span className="status-label">内容整理引擎</span><h2>DeepSeek API</h2><p>{aiConfigured ? "已配置：摘要、翻译与审核可用" : "尚未配置：可生成基础Markdown"}</p><small>密钥只保存在安全运行设置，不写入GitHub或OneDrive。</small></div><span className="connection-state">{aiConfigured ? "可用" : "待配置"}</span></article></div>
-      <section className="panel provider-status-panel"><div className="panel-heading"><div><p className="eyebrow">PROVIDER STATUS</p><h2>能力接口状态</h2></div></div><div className="provider-status-list">{providers.map((provider) => <article className={provider.configured ? "configured" : ""} key={provider.id}><span>{provider.id.toUpperCase().slice(0, 3)}</span><div><strong>{provider.label}</strong><small>{provider.provider}</small></div><em>{provider.configured ? "已配置" : provider.id === "tts" ? "浏览器回退" : "未配置"}</em></article>)}</div></section>
-      <section className="panel dictionary-manager"><div className="panel-heading"><div><p className="eyebrow">LOCAL DICTIONARIES</p><h2>本地词典管理</h2><p>查词顺序：本地词典 → 在线基础词典 → AI语境解释。</p></div></div><div className="dictionary-source-list">{dictionaries.map((source) => <article key={source.id}><label><input type="checkbox" checked={source.enabled} onChange={(event) => void updateDictionary(source.id, { enabled: event.target.checked })} /><span><strong>{source.name}</strong><small>{source.entryCount} 条词目</small></span></label><div><button onClick={() => void updateDictionary(source.id, { direction: "up" })}>↑</button><button onClick={() => void updateDictionary(source.id, { direction: "down" })}>↓</button></div></article>)}</div><form className="dictionary-test" onSubmit={(event) => { event.preventDefault(); void testDictionary(); }}><input value={dictionaryTest} onChange={(event) => setDictionaryTest(event.target.value)} placeholder="输入英文单词测试查词顺序" /><button className="button secondary">测试</button></form>{dictionaryResult && <p className="dictionary-test-result">{dictionaryResult}</p>}</section>
-    </>}
+        {section === "providers" && <><div className="system-status-grid"><article className={`panel system-card ${oneDrive?.connected ? "connected" : ""}`}><div className="system-card-icon">☁</div><div><span className="status-label">主要数据中心</span><h2>个人版 OneDrive</h2><p>{oneDrive?.connected ? `已连接：${oneDrive.accountLabel}` : "等待连接或授权"}</p><small>{oneDrive?.appFolder || "English Room 应用目录"}</small></div></article><article className={`panel system-card ${aiConfigured ? "connected" : ""}`}><div className="system-card-icon">AI</div><div><span className="status-label">内容整理引擎</span><h2>DeepSeek API</h2><p>{aiConfigured ? "已配置，可断点翻译和审核" : "尚未配置"}</p></div></article></div><section className="panel provider-status-panel"><div className="panel-heading"><div><p className="eyebrow">PROVIDER STATUS</p><h2>能力接口状态</h2></div></div><div className="provider-status-list">{providers.map((provider) => <article className={provider.configured ? "configured" : ""} key={provider.id}><span>{provider.id.toUpperCase().slice(0, 3)}</span><div><strong>{provider.label}</strong><small>{provider.provider}</small></div><em>{provider.configured ? "已配置" : provider.id === "tts" ? "浏览器回退" : "未配置"}</em></article>)}</div></section></>}
 
-    {activeTab === "data" && <>
-      <section className="panel batch-panel"><div className="panel-heading"><div><p className="eyebrow">BATCH MAINTENANCE</p><h2>资源库批量维护</h2><p>删除改为可恢复归档，原始文件不受影响。</p></div><span className="count-badge">已选 {selectedIds.length}</span></div><div className="batch-toolbar"><input value={batchCategory} onChange={(event) => setBatchCategory(event.target.value)} placeholder="新的分类名称" /><button className="button secondary" onClick={() => void batchAction("category")}>批量改分类</button><button className="button secondary" onClick={() => void batchAction("hide")}>批量隐藏</button><button className="button danger" onClick={() => void batchAction("archive")}>批量归档</button></div><div className="batch-list"><label className="batch-all"><input type="checkbox" checked={Boolean(library.length) && selectedIds.length === library.length} onChange={(event) => setSelectedIds(event.target.checked ? library.map((item) => item.id) : [])} /> 全选当前 {library.length} 项</label>{library.slice(0, 150).map((item) => <label key={item.id}><input type="checkbox" checked={selectedIds.includes(item.id)} onChange={(event) => setSelectedIds((current) => event.target.checked ? [...current, item.id] : current.filter((id) => id !== item.id))} /><span><strong>{item.title}</strong><small>{item.category} · {item.processingStatus} · {item.markdownPath || "未发布Markdown"}</small></span></label>)}</div></section>
-      <section className="panel file-audit-panel"><div className="panel-heading"><div><p className="eyebrow">ORIGINAL FILE AUDIT</p><h2>原文件处理记录</h2></div></div>{uploads.map((file) => <article key={file.id}><span>{file.contentType.includes("pdf") ? "PDF" : "FILE"}</span><div><strong>{file.filename}</strong><small>{file.externalPath || "临时文件区"} · {file.status === "recycle_bin" ? `回收站，预计 ${dateText(file.deleteAfter)} 清理` : file.status}</small></div></article>)}{!uploads.length && <div className="empty-state small">还没有上传记录。</div>}</section>
-    </>}
+        {section === "data" && <><section className="panel"><div className="panel-heading"><div><p className="eyebrow">DATA & BACKUP</p><h2>数据与备份</h2><p>失败、取消和暂停不会删除 Resource 或原始资料。</p></div><button className="button secondary" onClick={onExport}>导出索引</button></div></section><section className="panel file-audit-panel"><div className="panel-heading"><div><h2>原文件记录</h2></div></div>{uploads.map((file) => <article key={file.id}><span>{file.contentType.includes("pdf") ? "PDF" : "FILE"}</span><div><strong>{file.filename}</strong><small>{file.externalPath || "R2 原始文件区"} · {file.status}</small></div></article>)}</section></>}
+      </main>
+    </div>
+
+    {addOpen && <div className="processing-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setAddOpen(false); }}><form className="processing-modal" onSubmit={addResource}><header><div><p className="eyebrow">NEW RESOURCE</p><h2>添加资料</h2></div><button type="button" onClick={() => setAddOpen(false)} aria-label="关闭">×</button></header><nav>{(["file", "url", "paste"] as const).map((mode) => <button type="button" className={addMode === mode ? "active" : ""} key={mode} onClick={() => setAddMode(mode)}>{mode === "file" ? "文件" : mode === "url" ? "网页链接" : "粘贴正文"}</button>)}</nav>{addMode === "file" && <label className="drop-zone"><input name="file" type="file" required /><span>选择文件</span><small>原文件保留；处理任务会立即建立</small></label>}{addMode === "url" && <label><span>文章网址</span><input name="sourceUrl" type="url" required placeholder="https://…" /></label>}{addMode === "paste" && <><label><span>文章标题</span><input name="title" placeholder="可选；默认使用正文第一行" /></label><label><span>英文正文</span><textarea name="pastedText" required rows={12} placeholder="适用于403网站、付费墙或已经复制好的文章…" /></label></>}<label><span>保存分类</span><input name="category" defaultValue={addMode === "file" ? "离线文章阅读" : "待整理"} /></label><footer><button type="button" className="button secondary" onClick={() => setAddOpen(false)}>取消</button><button className="button primary" disabled={busy}>{busy ? "正在建立任务…" : "建立资源与任务"}</button></footer></form></div>}
   </section>;
+}
+
+function JobCard({ job, onDetail, onAction, onReview, onProviders }: { job: ProcessingJob; onDetail: () => void; onAction: (job: ProcessingJob, action: string, stepKey?: string) => Promise<void>; onReview: (id: number) => void; onProviders: () => void }) {
+  return <article className={`processing-job-card ${job.status}`}><header><span className="job-type">{job.inputType.toUpperCase()}</span><em>{statusLabel[job.status] || job.status}</em></header><h3>{job.sourceName || `资源 #${job.resultResourceId}`}</h3><dl><div><dt>当前步骤</dt><dd>{job.legacy ? "旧版处理记录" : job.steps.find((step) => step.stepKey === job.currentStep)?.stepLabel || job.stage}</dd></div><div><dt>真实进度</dt><dd>{currentProgress(job)}</dd></div><div><dt>最后成功</dt><dd>{job.steps.find((step) => step.stepKey === job.lastSuccessfulStep)?.stepLabel || "尚无"}</dd></div></dl>{job.errorMessage && <p className="job-card-error">{job.errorMessage}</p>}<div className="job-card-actions">{["running", "queued"].includes(job.status) && <button onClick={() => void onAction(job, "pause")}>暂停</button>}{job.status === "pausing" && <span>等待安全暂停…</span>}{job.status === "paused" && <><button onClick={() => void onAction(job, "resume")}>继续</button><button onClick={() => void onAction(job, "cancel")}>取消</button></>}{["failed", "needs_action"].includes(job.status) && !job.legacy && <><button onClick={() => void onAction(job, "resume_from_failure", job.currentStep)}>从断点继续</button><button onClick={() => void onAction(job, "retry_step", job.currentStep)}>重试本步骤</button></>}{job.status === "needs_provider" && <button onClick={onProviders}>去能力配置</button>}{job.status === "review_required" && job.resultResourceId && <button onClick={() => onReview(job.resultResourceId!)}>打开复核</button>}{job.status === "completed" && job.resultResourceId && <button onClick={() => { window.location.hash = "library"; }}>打开资源</button>}<button onClick={onDetail}>详情</button></div></article>;
+}
+
+function JobDetail({ job, selectedStep, onSelectStep, onBack, onAction, onReview, onProviders }: { job: ProcessingJob; selectedStep: ProcessingJobStep | null; onSelectStep: (key: string) => void; onBack: () => void; onAction: (job: ProcessingJob, action: string, stepKey?: string) => Promise<void>; onReview: (id: number) => void; onProviders: () => void }) {
+  const technical = selectedStep?.errorDetail.technicalMessage || job.errorDetail.technicalMessage;
+  return <section className="job-detail-workspace"><header><button className="button secondary" onClick={onBack}>← 返回任务</button><div><p className="eyebrow">JOB #{job.id}</p><h2>{job.sourceName}</h2><p>{statusLabel[job.status] || job.status} · {currentProgress(job)}</p></div><div className="job-detail-actions"><button onClick={() => void onAction(job, "restart")}>从头重新处理</button>{job.status === "paused" && <button onClick={() => void onAction(job, "resume")}>继续</button>}{job.status === "failed" && <button onClick={() => void onAction(job, "retry_step", job.currentStep)}>重试本步骤</button>}{job.status === "review_required" && job.resultResourceId && <button onClick={() => onReview(job.resultResourceId!)}>打开复核</button>}{job.status === "needs_provider" && <button onClick={onProviders}>去能力配置</button>}</div></header>{job.legacy ? <div className="legacy-job-note"><strong>旧版处理记录</strong><p>这个任务创建于 Processing 2.0 以前，没有可恢复的 Step Checkpoint。原始 Resource 仍在，可以选择“从头重新处理”建立新任务。</p></div> : <div className="job-detail-grid"><aside className="step-timeline">{job.steps.map((step) => <button className={`${step.status} ${selectedStep?.stepKey === step.stepKey ? "active" : ""}`} key={step.stepKey} onClick={() => onSelectStep(step.stepKey)}><span>{stepIcon[step.status] || "○"}</span><div><strong>{step.stepLabel}</strong><small>{step.progressTotal ? `${step.progressCurrent}/${step.progressTotal}` : statusLabel[step.status] || step.status}</small></div></button>)}</aside><article className="step-inspector">{selectedStep ? <><div className="step-inspector-title"><div><p className="eyebrow">{selectedStep.stepKey}</p><h3>{selectedStep.stepLabel}</h3></div><span className={selectedStep.status}>{statusLabel[selectedStep.status] || selectedStep.status}</span></div><dl><div><dt>尝试次数</dt><dd>{selectedStep.attemptCount}</dd></div><div><dt>开始时间</dt><dd>{dateText(selectedStep.startedAt)}</dd></div><div><dt>完成时间</dt><dd>{dateText(selectedStep.completedAt)}</dd></div><div><dt>Checkpoint</dt><dd>{selectedStep.outputRef ? "已保存" : "尚未生成"}</dd></div></dl>{(selectedStep.errorMessage || job.errorMessage) && <section className="processing-error-panel"><h4>{selectedStep.errorMessage || job.errorMessage}</h4><p>影响：{selectedStep.progressTotal ? `${selectedStep.progressCurrent}/${selectedStep.progressTotal} 已完成并保留。` : "之前已完成步骤和原始资料不会丢失。"}</p><div>{job.suggestedActions.map((action) => <span key={action}>{action}</span>)}</div>{technical && <details><summary>技术详情</summary><pre>{String(technical)}</pre></details>}</section>}<details className="step-output-detail"><summary>步骤输出与详细数据</summary><pre>{JSON.stringify({ outputRef: selectedStep.outputRef, detail: selectedStep.detail, error: selectedStep.errorDetail }, null, 2)}</pre></details></> : <div className="empty-state">选择一个步骤查看详情。</div>}</article></div>}</section>;
 }

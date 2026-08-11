@@ -144,7 +144,8 @@ export async function PATCH(request: Request, context: Context) {
       if (resource.markdown_object_key) previousPublished.push({ objectKey: String(resource.markdown_object_key), path: String(resource.markdown_path || ""), publishedAt: new Date().toISOString() });
       const publishedAt = new Date().toISOString();
       const publishedPath = `10_Library/${type.toLowerCase()}/${publishedAt.slice(0, 4)}/${slugify(String(resource.title || `resource-${resource.id}`))}.md`;
-      try { await saveMarkdownToOneDrive(ownerId, publishedPath, saved.markdown); } catch { /* R2 stays readable if OneDrive is temporarily unavailable. */ }
+      let oneDriveSynced = false;
+      try { await saveMarkdownToOneDrive(ownerId, publishedPath, saved.markdown); oneDriveSynced = true; } catch { /* R2 stays readable if OneDrive is temporarily unavailable. */ }
       const nextMetadata = stringifyResourceMetadata({
         ...metadata, reviewDraftObjectKey: "", reviewDraftPath: "", reviewIssues: saved.validation.issues,
         review: { ...metadata.review, totalBlocks: saved.validation.totalBlocks, translatedBlocks: saved.validation.translatedBlocks, issues: saved.validation.issues, checkedAt: saved.validation.checkedAt, previousPublished: previousPublished.slice(-10), lastPublishedAt: publishedAt },
@@ -154,6 +155,9 @@ export async function PATCH(request: Request, context: Context) {
         getDatabase().prepare("UPDATE resources SET markdown_object_key=?,markdown_path=?,metadata_json=?,processing_status='ready',translation_status=?,published_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?")
           .bind(saved.objectKey, publishedPath, nextMetadata, translationStatus, publishedAt, resource.id, ownerId),
         getDatabase().prepare("UPDATE processing_jobs SET status='complete',stage='人工复核后已发布',progress=100,completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE owner_id=? AND result_resource_id=? AND status='review_required'").bind(ownerId, resource.id),
+        getDatabase().prepare("UPDATE processing_job_steps SET status='completed',completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE owner_id=? AND job_id IN (SELECT id FROM processing_jobs WHERE owner_id=? AND result_resource_id=?) AND step_key IN ('review','publish')").bind(ownerId, ownerId, resource.id),
+        getDatabase().prepare("UPDATE processing_job_steps SET status=?,error_code=?,error_message=?,detail_json=?,completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE owner_id=? AND job_id IN (SELECT id FROM processing_jobs WHERE owner_id=? AND result_resource_id=?) AND step_key='sync'")
+          .bind(oneDriveSynced ? "completed" : "skipped", oneDriveSynced ? "" : "ONEDRIVE_SYNC_ERROR", oneDriveSynced ? "" : "OneDrive暂未同步，R2正式版本仍可阅读", JSON.stringify({ oneDriveSynced, publishedPath }), ownerId, ownerId, resource.id),
       ]);
     }
     resource = await ownedResource(Number(id), ownerId) as Record<string, unknown>;

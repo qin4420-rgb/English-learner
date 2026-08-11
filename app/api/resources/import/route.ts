@@ -1,14 +1,9 @@
 import { parseDictionary } from "@/app/api/_lib/dictionary";
 import { saveOriginalToOneDrive } from "@/app/api/_lib/onedrive";
-import { processResource } from "@/app/api/_lib/resource-processing";
+import { initializeProcessingJob } from "@/app/api/_lib/resource-processing";
 import { ensureDatabase, getDatabase, getMediaBucket, getOwnerId, jsonError } from "@/app/api/_lib/runtime";
 import { parseWordList } from "@/app/api/_lib/word-list";
 import { inferResourceType, normalizeResourceType, normalizeTags, stringifyResourceMetadata, type LearningUse, type ResourceType } from "@/app/resource-model";
-
-async function createJob(ownerId: string, resourceId: number, inputType: string, sourceName: string, sourceUrl: string, uploadId: number | null, stage: string) {
-  const result = await getDatabase().prepare("INSERT INTO processing_jobs (owner_id,input_type,source_name,source_url,upload_id,status,stage,progress,result_resource_id,delete_original_on_success) VALUES (?,?,?,?,?,'queued',?,0,?,0)").bind(ownerId, inputType, sourceName, sourceUrl, uploadId, stage, resourceId).run();
-  return Number(result.meta.last_row_id);
-}
 
 async function saveUpload(ownerId: string, file: File) {
   if (file.size > 25 * 1024 * 1024) throw new Error(`${file.name} 超过网页单文件25MB限制；请改用可访问的媒体链接`);
@@ -57,10 +52,10 @@ export async function POST(request: Request) {
       const resourceUrl = `urn:english-room:link:${encodeURIComponent(sourceUrl)}`;
       const resourceId = await insertResource(ownerId, { title, url: resourceUrl, sourceUrl, type, folderId: body.folderId || null, tags: body.tags, learningUses: body.learningUses, status: ["Audio", "Video"].includes(type) ? "needs_provider" : "waiting" });
       if (["Article", "Audio", "Video"].includes(type)) {
-        const jobId = await createJob(ownerId, resourceId, "url", title, sourceUrl, null, type === "Article" ? "等待网页提取" : "等待STT");
-        try { await processResource({ ownerId, resourceId, jobId, sourceUrl }); } catch { /* Resource and failed job remain visible. */ }
+        const jobId = await initializeProcessingJob({ ownerId, resourceId, inputType: "url", sourceName: title, sourceUrl, uploadId: null });
+        return Response.json({ ok: true, resources: [resourceId], jobs: [jobId], status: "queued" }, { status: 202 });
       }
-      return Response.json({ ok: true, resources: [resourceId] });
+      return Response.json({ ok: true, resources: [resourceId], jobs: [], status: "ready" }, { status: 202 });
     }
 
     const form = await request.formData();
@@ -71,6 +66,7 @@ export async function POST(request: Request) {
     const tags = normalizeTags(String(form.get("tags") || ""));
     const learningUses = String(form.get("learningUses") || "").split(",").filter(Boolean) as LearningUse[];
     const resourceIds: number[] = [];
+    const jobIds: number[] = [];
     for (const file of files) {
       const upload = await saveUpload(ownerId, file);
       const type = requestedType ? normalizeResourceType(requestedType) : inferResourceType(file.name, file.type);
@@ -94,10 +90,10 @@ export async function POST(request: Request) {
         const metadataJson = stringifyResourceMetadata({ uploadId: upload.id, mimeType: file.type, originalFilename: file.name, tags, dictionary: { entryCount: entries.length, sourceId } }, type);
         await getDatabase().prepare("UPDATE resources SET metadata_json=?,processing_status='ready',description=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(metadataJson, `${entries.length} 条结构化词典词条`, resourceId, ownerId).run();
       } else {
-        const jobId = await createJob(ownerId, resourceId, "upload", file.name, "", upload.id, ["Audio", "Video"].includes(type) ? "等待STT" : type === "Image" ? "等待OCR" : "等待文字提取");
-        try { await processResource({ ownerId, resourceId, jobId, uploadId: upload.id }); } catch { /* Resource and failed job remain visible. */ }
+        const jobId = await initializeProcessingJob({ ownerId, resourceId, inputType: "upload", sourceName: file.name, uploadId: upload.id });
+        jobIds.push(jobId);
       }
     }
-    return Response.json({ ok: true, resources: resourceIds });
+    return Response.json({ ok: true, resources: resourceIds, jobs: jobIds, status: jobIds.length ? "queued" : "ready" }, { status: 202 });
   } catch (error) { return jsonError(error); }
 }
