@@ -32,6 +32,38 @@ export type ResourceItem = {
   updatedAt: string;
 };
 
+export type ReviewIssue = {
+  id: string;
+  blockId?: string;
+  severity: "error" | "warning" | "info";
+  type: string;
+  message: string;
+};
+
+export type ReviewBlock = {
+  id: string;
+  type: string;
+  original: string;
+  translation: string;
+  manualEdited: boolean;
+};
+
+export type ResourceReviewPayload = {
+  resource: ResourceItem;
+  draftMarkdown: string;
+  publishedMarkdown: string;
+  blocks: ReviewBlock[];
+  review: {
+    totalBlocks: number;
+    translatedBlocks: number;
+    issues: ReviewIssue[];
+    manualEditedBlocks: string[];
+    checkedAt: string;
+    aiReviews?: Record<string, { status: "pass" | "warning"; issues: string[]; suggestedTranslation: string }>;
+  };
+  hasPublished: boolean;
+};
+
 export type ReadingFolderItem = {
   id: number;
   name: string;

@@ -1,5 +1,7 @@
 import { extractText, getDocumentProxy } from "unpdf";
 import { getRuntimeBindings } from "@/app/api/_lib/runtime";
+import { htmlToStructuredMarkdown, inspectTranslationResult } from "@/app/article-review.mjs";
+import type { ReviewIssue } from "@/app/article-review.mjs";
 
 export type DistilledDocument = {
   title: string;
@@ -38,13 +40,7 @@ function cleanText(value: string): string {
 
 function htmlToText(html: string): { title: string; text: string } {
   const title = cleanText(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "网页文章");
-  const cleaned = html
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<(script|style|noscript|svg|form|nav|header|footer|aside)[^>]*>[\s\S]*?<\/\1>/gi, " ")
-    .replace(/<br\s*\/?\s*>/gi, "\n")
-    .replace(/<\/(p|div|section|article|li|h[1-6]|blockquote)>/gi, "\n\n")
-    .replace(/<li[^>]*>/gi, "- ")
-    .replace(/<[^>]+>/g, " ");
+  const cleaned = htmlToStructuredMarkdown(html);
   return { title, text: cleanText(cleaned) };
 }
 
@@ -149,7 +145,9 @@ export async function extractUploadedText(
   throw new Error("第一版支持 PDF、Markdown、TXT、HTML、字幕和网页链接；该文件类型暂不能安全转换");
 }
 
-async function aiEnrich(title: string, original: string): Promise<Omit<DistilledDocument, "original" | "pageCount" | "aiEnhanced"> | null> {
+type EnrichmentResult = Pick<DistilledDocument, "title" | "summary" | "themes" | "vocabulary">;
+
+async function aiEnrich(title: string, original: string): Promise<EnrichmentResult | null> {
   const bindings = getRuntimeBindings();
   if (!bindings.DEEPSEEK_API_KEY) return null;
   const excerpt = original.slice(0, 80000);
@@ -167,7 +165,7 @@ async function aiEnrich(title: string, original: string): Promise<Omit<Distilled
       messages: [
         {
           role: "system",
-          content: "你是专业英文学习资料编辑。输出严格 JSON，字段必须是 title, summary, themes, translation, vocabulary。summary 用中文概括；themes 是中文字符串数组；translation 是忠实、自然、完整的中文译文；vocabulary 是数组，每项含 word, meaning, example。不要添加输入中不存在的事实。",
+          content: "你是专业英文学习资料编辑。只负责元数据整理，不翻译正文。输出严格 JSON，字段必须是 title, summary, themes, vocabulary。summary 用中文概括；themes 是中文字符串数组；vocabulary 是数组，每项含 word, meaning, example。不要返回translation字段，不要添加输入中不存在的事实。",
         },
         {
           role: "user",
@@ -180,50 +178,88 @@ async function aiEnrich(title: string, original: string): Promise<Omit<Distilled
   if (!response.ok) throw new Error(data.error?.message || "DeepSeek 内容整理失败");
   const content = data.choices?.[0]?.message?.content;
   if (!content) throw new Error("DeepSeek 没有返回整理内容");
-  const parsed = JSON.parse(content) as Partial<Omit<DistilledDocument, "original" | "pageCount" | "aiEnhanced">>;
+  const parsed = JSON.parse(content) as Partial<EnrichmentResult>;
   return {
     title: String(parsed.title || title),
     summary: String(parsed.summary || ""),
     themes: Array.isArray(parsed.themes) ? parsed.themes.map(String).slice(0, 12) : [],
-    translation: String(parsed.translation || ""),
     vocabulary: Array.isArray(parsed.vocabulary)
       ? parsed.vocabulary.slice(0, 80).map((item) => ({ word: String(item.word || ""), meaning: String(item.meaning || ""), example: item.example ? String(item.example) : "" })).filter((item) => item.word)
       : [],
   };
 }
 
-export async function translateBlocks(blocks: TranslationBlock[]): Promise<Map<string, string>> {
+export type TranslationRun = { translations: Map<string, string>; issues: ReviewIssue[] };
+
+function translationBatches(blocks: TranslationBlock[]) {
+  const batches: TranslationBlock[][] = [];
+  let current: TranslationBlock[] = [];
+  let characters = 0;
+  for (const block of blocks) {
+    const nextLength = block.text.length;
+    if (current.length && (current.length >= 15 || characters + nextLength > 8000) && current.length >= 5) {
+      batches.push(current); current = []; characters = 0;
+    }
+    current.push(block); characters += nextLength;
+  }
+  if (current.length) batches.push(current);
+  return batches;
+}
+
+async function requestBlockTranslations(batch: TranslationBlock[]) {
   const bindings = getRuntimeBindings();
-  const translated = new Map<string, string>();
-  if (!bindings.DEEPSEEK_API_KEY || !blocks.length) return translated;
-  for (let start = 0; start < blocks.length; start += 60) {
-    const batch = blocks.slice(start, start + 60);
-    const response = await fetch("https://api.deepseek.com/chat/completions", {
+  const response = await fetch("https://api.deepseek.com/chat/completions", {
       method: "POST",
       headers: { authorization: `Bearer ${bindings.DEEPSEEK_API_KEY}`, "content-type": "application/json" },
       body: JSON.stringify({
         model: bindings.DEEPSEEK_MODEL || "deepseek-v4-pro",
         thinking: { type: "disabled" },
         response_format: { type: "json_object" },
-        max_tokens: 8000,
+        max_tokens: 10000,
         messages: [
           { role: "system", content: "把英文学习资料逐段翻译为忠实、自然的简体中文。只输出JSON对象，格式为 {\"blocks\":[{\"id\":\"原ID\",\"translation\":\"中文\"}]}。不得合并、拆分或改写ID。" },
           { role: "user", content: JSON.stringify({ blocks: batch }) },
         ],
       }),
-    });
-    const data = await response.json() as { choices?: { message?: { content?: string } }[]; error?: { message?: string } };
-    if (!response.ok) throw new Error(data.error?.message || "DeepSeek 分段翻译失败");
-    const content = data.choices?.[0]?.message?.content;
-    if (!content) throw new Error("DeepSeek 没有返回分段翻译");
-    const parsed = JSON.parse(content) as { blocks?: { id?: string; translation?: string }[] };
-    for (const item of parsed.blocks || []) {
-      const id = String(item.id || "");
-      const translation = String(item.translation || "").trim();
-      if (id && translation && batch.some((block) => block.id === id)) translated.set(id, translation);
+  });
+  const data = await response.json() as { choices?: { message?: { content?: string } }[]; error?: { message?: string } };
+  if (!response.ok) throw new Error(data.error?.message || "DeepSeek 分段翻译失败");
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error("DeepSeek 没有返回分段翻译");
+  const parsed = JSON.parse(content) as { blocks?: { id?: string; translation?: string }[] };
+  return parsed.blocks || [];
+}
+
+export async function translateBlocksDetailed(blocks: TranslationBlock[]): Promise<TranslationRun> {
+  const bindings = getRuntimeBindings();
+  const translations = new Map<string, string>();
+  const protocolIssues: ReviewIssue[] = [];
+  if (!bindings.DEEPSEEK_API_KEY || !blocks.length) return { translations, issues: [] };
+  for (const batch of translationBatches(blocks)) {
+    let pending = batch;
+    for (let attempt = 0; attempt < 3 && pending.length; attempt += 1) {
+      let returned: { id?: string; translation?: string }[] = [];
+      try {
+        returned = await requestBlockTranslations(pending);
+      } catch (error) {
+        if (attempt === 2) {
+          protocolIssues.push(...pending.map((block) => ({ id: `translation-request-${block.id}`, blockId: block.id, severity: "error" as const, type: "translation_request_failed", message: `${block.id} 翻译请求重试后仍失败：${(error as Error).message}` })));
+        }
+        continue;
+      }
+      const inspected = inspectTranslationResult(pending, returned);
+      for (const [id, translation] of inspected.translations) translations.set(id, translation);
+      protocolIssues.push(...inspected.issues.filter((issue) => ["unknown_translation_id", "duplicate_translation_id"].includes(issue.type)));
+      pending = pending.filter((block) => !translations.has(block.id));
     }
   }
-  return translated;
+  const finalInspection = inspectTranslationResult(blocks, Array.from(translations, ([id, translation]) => ({ id, translation })));
+  const uniqueIssues = [...protocolIssues, ...finalInspection.issues].filter((issue, index, list) => list.findIndex((item) => item.id === issue.id) === index);
+  return { translations, issues: uniqueIssues };
+}
+
+export async function translateBlocks(blocks: TranslationBlock[]): Promise<Map<string, string>> {
+  return (await translateBlocksDetailed(blocks)).translations;
 }
 
 export async function distillDocument(
@@ -236,7 +272,7 @@ export async function distillDocument(
     title: enhanced?.title || title,
     summary: enhanced?.summary || "尚未配置AI增强；正文已经保存，可在维护中心补充摘要、翻译和重点词汇。",
     themes: enhanced?.themes || [],
-    translation: enhanced?.translation || "",
+    translation: "",
     vocabulary: enhanced?.vocabulary || [],
     original,
     pageCount,

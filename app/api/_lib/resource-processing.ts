@@ -1,5 +1,6 @@
 import { normalizeResourceType, parseResourceMetadata, stringifyResourceMetadata } from "@/app/resource-model";
-import { distillDocument, extractUploadedText, extractWebPage, slugify, toMarkdown } from "./distill";
+import { canonicalBlocks, renderReviewMarkdown, validateArticleDraft } from "@/app/article-review.mjs";
+import { distillDocument, extractUploadedText, extractWebPage, slugify, translateBlocksDetailed } from "./distill";
 import { saveMarkdownToOneDrive } from "./onedrive";
 import { runOCR, runSTT, runSTTUrl } from "./providers";
 import { getDatabase, getMediaBucket, getRuntimeBindings } from "./runtime";
@@ -64,20 +65,55 @@ export async function processResource(input: ProcessInput) {
       }
     }
     if (text.trim().length < 20) throw new Error("可识别文字过短，原始资料已保留等待复核");
-    await database.prepare("UPDATE processing_jobs SET stage='AI整理、翻译与Markdown',progress=52,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(input.jobId, input.ownerId).run();
+    await database.prepare("UPDATE processing_jobs SET stage='AI元数据整理与分段翻译',progress=52,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(input.jobId, input.ownerId).run();
     const distilled = await distillDocument(title, text, pageCount);
+    const originalBlocks = canonicalBlocks(distilled.original);
+    const translationRun = await translateBlocksDetailed(originalBlocks.map((block) => ({ id: block.id, text: block.original })));
+    const reviewBlocks = originalBlocks.map((block) => ({ ...block, translation: translationRun.translations.get(block.id) || "" }));
+    const validation = validateArticleDraft(reviewBlocks);
+    const reviewIssues = [...translationRun.issues, ...validation.issues].filter((issue, index, list) => list.findIndex((item) => item.id === issue.id) === index);
     const capturedAt = new Date().toISOString();
     const date = capturedAt.slice(0, 10);
-    const objectKey = `${input.ownerId}/markdown/${date}/${crypto.randomUUID()}-${slugify(distilled.title)}.md`;
-    const path = `10_Library/${type.toLowerCase()}/${date.slice(0, 4)}/${date}/${slugify(distilled.title)}.md`;
-    const markdown = toMarkdown(distilled, { id: `resource-${input.resourceId}`, sourceType: type, sourceUrl: input.sourceUrl || String(resource.source_url || ""), capturedAt });
+    const objectKey = `${input.ownerId}/review-drafts/${date}/${crypto.randomUUID()}-${slugify(distilled.title)}.md`;
+    const path = `10_Library/_Review/${type.toLowerCase()}/${date.slice(0, 4)}/${date}/${slugify(distilled.title)}-draft.md`;
+    const markdown = renderReviewMarkdown(reviewBlocks, {
+      id: `resource-${input.resourceId}`,
+      title: distilled.title,
+      sourceType: type,
+      sourceUrl: input.sourceUrl || String(resource.source_url || ""),
+      capturedAt,
+      pageCount: distilled.pageCount || 0,
+      aiEnhanced: distilled.aiEnhanced,
+    }, { summary: distilled.summary, themes: distilled.themes, vocabulary: distilled.vocabulary });
     await getMediaBucket().put(objectKey, markdown, { httpMetadata: { contentType: "text/markdown; charset=utf-8" } });
     let oneDriveSynced = false;
     try { await saveMarkdownToOneDrive(input.ownerId, path, markdown); oneDriveSynced = true; } catch { /* R2 remains authoritative until OneDrive reconnects. */ }
-    const nextMetadata = stringifyResourceMetadata({ ...metadata, summary: distilled.summary, themes: distilled.themes, tags: metadata.tags.length ? metadata.tags : distilled.themes, candidateVocabulary: distilled.vocabulary, mediaSegments: rawSegments.length ? rawSegments : metadata.mediaSegments, pageCount: distilled.pageCount || 0, aiEnhanced: distilled.aiEnhanced }, type);
+    const nextMetadata = stringifyResourceMetadata({
+      ...metadata,
+      summary: distilled.summary,
+      themes: distilled.themes,
+      tags: metadata.tags.length ? metadata.tags : distilled.themes,
+      candidateVocabulary: distilled.vocabulary,
+      mediaSegments: rawSegments.length ? rawSegments : metadata.mediaSegments,
+      pageCount: distilled.pageCount || 0,
+      aiEnhanced: distilled.aiEnhanced,
+      reviewDraftObjectKey: objectKey,
+      reviewDraftPath: path,
+      reviewIssues,
+      manualEditedBlocks: [],
+      review: {
+        totalBlocks: validation.totalBlocks,
+        translatedBlocks: validation.translatedBlocks,
+        issues: reviewIssues,
+        manualEditedBlocks: [],
+        checkedAt: validation.checkedAt,
+        previousPublished: metadata.review?.previousPublished || [],
+      },
+    }, type);
+    const translationStatus = validation.translatedBlocks === validation.totalBlocks && !reviewIssues.some((issue) => issue.severity === "error") ? "complete" : validation.translatedBlocks ? "partial" : "pending";
     await database.batch([
-      database.prepare(`UPDATE resources SET title=?,description=?,markdown_object_key=?,markdown_path=?,processing_status='review_required',translation_status=?,metadata_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?`).bind(distilled.title, distilled.summary, objectKey, path, distilled.translation ? "complete" : "pending", nextMetadata, input.resourceId, input.ownerId),
-      database.prepare("UPDATE processing_jobs SET status='review_required',stage=?,progress=100,result_resource_id=?,completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(oneDriveSynced ? "整理完成，等待复核" : "Markdown已生成，等待复核与OneDrive同步", input.resourceId, input.jobId, input.ownerId),
+      database.prepare(`UPDATE resources SET title=?,description=?,processing_status='review_required',translation_status=?,metadata_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?`).bind(distilled.title, distilled.summary, translationStatus, nextMetadata, input.resourceId, input.ownerId),
+      database.prepare("UPDATE processing_jobs SET status='review_required',stage=?,progress=100,result_resource_id=?,completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(oneDriveSynced ? `Draft已生成：${validation.translatedBlocks}/${validation.totalBlocks}译文，等待复核` : `Draft已生成：${validation.translatedBlocks}/${validation.totalBlocks}译文，等待复核与OneDrive同步`, input.resourceId, input.jobId, input.ownerId),
     ]);
     return { status: "review_required" as const, aiEnhanced: distilled.aiEnhanced, oneDriveSynced };
   } catch (error) {

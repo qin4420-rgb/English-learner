@@ -77,22 +77,17 @@ export async function PATCH(request: Request) {
   try {
     await ensureDatabase();
     const ownerId = await getOwnerId();
-    const body = await request.json() as { id?: number; action?: "retry" | "confirm" | "later" };
+    const body = await request.json() as { id?: number; action?: "retry" | "later" | string };
     if (!body.id || !body.action) return jsonError(new Error("缺少处理任务或操作"), 400);
     const job = await getDatabase().prepare("SELECT * FROM processing_jobs WHERE owner_id=? AND id=?").bind(ownerId, body.id).first<Record<string, unknown>>();
     if (!job) return jsonError(new Error("处理任务不存在"), 404);
     const resourceId = Number(job.result_resource_id || 0);
-    if (body.action === "confirm") {
-      await getDatabase().batch([
-        getDatabase().prepare("UPDATE processing_jobs SET status='complete',stage='已确认入库',progress=100,completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE owner_id=? AND id=?").bind(ownerId, body.id),
-        getDatabase().prepare("UPDATE resources SET processing_status='ready',updated_at=CURRENT_TIMESTAMP WHERE owner_id=? AND id=?").bind(ownerId, resourceId),
-      ]);
-      return Response.json({ ok: true });
-    }
+    if (body.action === "confirm") return jsonError(new Error("请打开复核工作台，完成检查后再发布"), 400);
     if (body.action === "later") {
       await getDatabase().prepare("UPDATE processing_jobs SET status='review_required',stage='稍后复核',updated_at=CURRENT_TIMESTAMP WHERE owner_id=? AND id=?").bind(ownerId, body.id).run();
       return Response.json({ ok: true });
     }
+    if (body.action !== "retry") return jsonError(new Error("不支持的处理操作"), 400);
     await getDatabase().prepare("UPDATE processing_jobs SET status='queued',stage='重新排队',progress=0,error='',updated_at=CURRENT_TIMESTAMP WHERE owner_id=? AND id=?").bind(ownerId, body.id).run();
     const result = await processResource({
       ownerId,

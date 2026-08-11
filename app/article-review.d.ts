@@ -1,0 +1,11 @@
+export type ReviewIssue = { id: string; blockId?: string; severity: "error" | "warning" | "info"; type: string; message: string };
+export type ReviewBlock = { id: string; type: string; original: string; translation: string; manualEdited: boolean };
+export function blockId(index: number): string;
+export function canonicalBlocks(value: string): ReviewBlock[];
+export function parseReviewMarkdown(markdown: string): ReviewBlock[];
+export function normalizeReviewBlocks(blocks: ReviewBlock[]): ReviewBlock[];
+export function renderBlockSection(blocks: ReviewBlock[], field: "original" | "translation"): string;
+export function renderReviewMarkdown(blocks: ReviewBlock[], frontmatter?: Record<string, unknown>, enrichment?: Record<string, unknown>): string;
+export function inspectTranslationResult(inputBlocks: { id: string; text: string }[], items: { id?: string; translation?: string }[]): { translations: Map<string, string>; issues: ReviewIssue[] };
+export function validateArticleDraft(blocks: ReviewBlock[]): { totalBlocks: number; translatedBlocks: number; issues: ReviewIssue[]; checkedAt: string };
+export function htmlToStructuredMarkdown(html: string): string;

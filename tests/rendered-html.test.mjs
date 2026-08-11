@@ -77,8 +77,51 @@ test("V2 resource core uses stable types, reviewable processing and source-aware
   assert.match(schema, /dictionaryEntries/);
   assert.match(lookup, /dictionary_entries/);
   assert.match(lookup, /在线基础词典/);
-  assert.match(processing, /"retry" \| "confirm" \| "later"/);
+  assert.match(processing, /请打开复核工作台/);
   assert.match(processing, /review_required/);
+});
+
+test("Reader 3.0 canonical blocks keep translation IDs stable and reviewable", async () => {
+  const { canonicalBlocks, inspectTranslationResult, renderReviewMarkdown, parseReviewMarkdown } = await import("../app/article-review.mjs");
+  const blocks = canonicalBlocks("## First heading\n\nA complete first paragraph.\n\n> A quoted sentence.");
+  assert.deepEqual(blocks.map((block) => block.id), ["p0001", "p0002", "p0003"]);
+  assert.deepEqual(blocks.map((block) => block.type), ["h2", "paragraph", "quote"]);
+
+  const result = inspectTranslationResult(blocks.map((block) => ({ id: block.id, text: block.original })), [
+    { id: "p0001", translation: "第一个标题" },
+    { id: "p0001", translation: "重复标题" },
+    { id: "p9999", translation: "未知段落" },
+  ]);
+  assert.equal(result.translations.get("p0001"), "第一个标题");
+  assert.ok(result.issues.some((issue) => issue.type === "duplicate_translation_id"));
+  assert.ok(result.issues.some((issue) => issue.type === "unknown_translation_id"));
+  assert.ok(result.issues.some((issue) => issue.blockId === "p0002" && issue.type === "missing_translation"));
+
+  const translated = blocks.map((block, index) => ({ ...block, translation: `译文${index + 1}` }));
+  const markdown = renderReviewMarkdown(translated, { id: "test", title: "Test Article" });
+  assert.deepEqual(parseReviewMarkdown(markdown).map((block) => block.translation), ["译文1", "译文2", "译文3"]);
+});
+
+test("Article QA reports missing translation and suspected web noise", async () => {
+  const { validateArticleDraft } = await import("../app/article-review.mjs");
+  const validation = validateArticleDraft([
+    { id: "p0001", type: "paragraph", original: "Subscribe to our newsletter for more updates.", translation: "", manualEdited: false },
+    { id: "p0002", type: "paragraph", original: "The report contains twelve verified findings.", translation: "这份报告包含十二项已经核实的发现。", manualEdited: true },
+  ]);
+  assert.equal(validation.totalBlocks, 2);
+  assert.equal(validation.translatedBlocks, 1);
+  assert.ok(validation.issues.some((issue) => issue.type === "missing_translation" && issue.blockId === "p0001"));
+  assert.ok(validation.issues.some((issue) => issue.type === "suspected_noise" && issue.blockId === "p0001"));
+});
+
+test("HTML distillation preserves article headings, lists, quotes and links", async () => {
+  const { htmlToStructuredMarkdown } = await import("../app/article-review.mjs");
+  const markdown = htmlToStructuredMarkdown('<article><h2>Markets</h2><p>Read the <a href="https://example.com/report">report</a>.</p><ul><li>Growth</li><li>Inflation</li></ul><blockquote>Evidence matters.</blockquote></article>');
+  assert.match(markdown, /## Markets/);
+  assert.match(markdown, /\[report\]\(https:\/\/example\.com\/report\)/);
+  assert.match(markdown, /- Growth/);
+  assert.match(markdown, /- Inflation/);
+  assert.match(markdown, /> Evidence matters\./);
 });
 
 test("Podcast URLs are recognized, converted and isolated to Apple embeds", async () => {

@@ -37,6 +37,20 @@ export type ResourceMetadata = {
   toolResources?: { title: string; url: string; note: string }[];
   attention?: string;
   personalNote?: string;
+  reviewDraftObjectKey?: string;
+  reviewDraftPath?: string;
+  reviewIssues?: { id: string; blockId?: string; severity: "error" | "warning" | "info"; type: string; message: string }[];
+  manualEditedBlocks?: string[];
+  review?: {
+    totalBlocks: number;
+    translatedBlocks: number;
+    issues: { id: string; blockId?: string; severity: "error" | "warning" | "info"; type: string; message: string }[];
+    manualEditedBlocks: string[];
+    checkedAt: string;
+    aiReviews?: Record<string, { status: "pass" | "warning"; issues: string[]; suggestedTranslation: string }>;
+    previousPublished?: { objectKey: string; path: string; publishedAt: string }[];
+    lastPublishedAt?: string;
+  };
   [key: string]: unknown;
 };
 

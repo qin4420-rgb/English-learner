@@ -103,7 +103,7 @@ export default function LearningDesk(props: Props) {
   }
 
   if (activeTab === "reading") {
-    return <section className="reading-studio-page"><div className="page-heading reading-heading"><div><p className="eyebrow">READING STUDIO</p><h1>文章阅读</h1><p>书架、正文、随读词典与云端进度组成完整阅读空间；支持框内阅读、页面阅读和专注模式。</p></div></div><ArticleReader courses={courses} resources={resources} vocabulary={vocabulary} onReloadResources={onReloadResources} onReloadVocabulary={onReloadVocabulary} onReloadNotes={onReloadNotes} onNotice={onNotice} /></section>;
+    return <section className="reading-studio-page"><ArticleReader courses={courses} resources={resources} vocabulary={vocabulary} onReloadResources={onReloadResources} onReloadVocabulary={onReloadVocabulary} onReloadNotes={onReloadNotes} onNotice={onNotice} /></section>;
   }
 
   if (activeTab === "notes") {

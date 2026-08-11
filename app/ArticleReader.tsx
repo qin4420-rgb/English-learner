@@ -1,6 +1,6 @@
 "use client";
 
-import type { CSSProperties } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -230,6 +230,13 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [readerTheme, setReaderTheme] = useState<ReaderTheme>("paper");
   const [paragraphSpacing, setParagraphSpacing] = useState("standard");
+  const [contentWidthPx, setContentWidthPx] = useState(820);
+  const [navigatorWidth, setNavigatorWidth] = useState(340);
+  const [dictionaryWidth, setDictionaryWidth] = useState(420);
+  const [voiceAccent, setVoiceAccent] = useState<"auto" | "en-US" | "en-GB">("auto");
+  const [voiceUri, setVoiceUri] = useState("");
+  const [voiceRate, setVoiceRate] = useState(0.92);
+  const [englishVoices, setEnglishVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [revealedTranslations, setRevealedTranslations] = useState<Set<string>>(new Set());
   const [quickLookupOpen, setQuickLookupOpen] = useState(false);
@@ -253,6 +260,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
   const latestProgressRef = useRef<ReadingProgressItem | undefined>(undefined);
   const restoredResourceRef = useRef(0);
   const modeSwitchProgressRef = useRef<{ ratio: number; anchor: string } | null>(null);
+  const quickLookupRef = useRef<HTMLElement>(null);
 
   const activeCourse = readingCourses.find((course) => course.id === selectedCourseId);
   const readableResources = activeCourse?.resourceIds.length
@@ -298,6 +306,13 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
       if (theme === "paper" || theme === "white" || theme === "dark") setReaderTheme(theme);
       const spacing = localStorage.getItem("english-room-reader-paragraph-spacing");
       if (spacing === "compact" || spacing === "standard" || spacing === "wide") setParagraphSpacing(spacing);
+      setContentWidthPx(Math.min(1200, Math.max(680, Number(localStorage.getItem("english-room-reader-content-width-px") || 820))));
+      setNavigatorWidth(Math.min(480, Math.max(240, Number(localStorage.getItem("english-room-reader-left-width") || 340))));
+      setDictionaryWidth(Math.min(560, Math.max(300, Number(localStorage.getItem("english-room-reader-right-width") || 420))));
+      const accent = localStorage.getItem("english-room-reader-voice-accent");
+      if (accent === "en-US" || accent === "en-GB" || accent === "auto") setVoiceAccent(accent);
+      setVoiceUri(localStorage.getItem("english-room-reader-voice-uri") || "");
+      setVoiceRate(Math.min(1.4, Math.max(0.65, Number(localStorage.getItem("english-room-reader-voice-rate") || 0.92))));
       setPreferencesReady(true);
     });
   }, []);
@@ -307,13 +322,35 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
   useEffect(() => { if (preferencesReady) localStorage.setItem("english-room-reader-mode", readingMode); }, [preferencesReady, readingMode]);
   useEffect(() => { if (preferencesReady) localStorage.setItem("english-room-reader-theme", readerTheme); }, [preferencesReady, readerTheme]);
   useEffect(() => { if (preferencesReady) localStorage.setItem("english-room-reader-paragraph-spacing", paragraphSpacing); }, [paragraphSpacing, preferencesReady]);
+  useEffect(() => { if (preferencesReady) localStorage.setItem("english-room-reader-content-width-px", String(contentWidthPx)); }, [contentWidthPx, preferencesReady]);
+  useEffect(() => { if (preferencesReady) localStorage.setItem("english-room-reader-left-width", String(navigatorWidth)); }, [navigatorWidth, preferencesReady]);
+  useEffect(() => { if (preferencesReady) localStorage.setItem("english-room-reader-right-width", String(dictionaryWidth)); }, [dictionaryWidth, preferencesReady]);
+  useEffect(() => { if (preferencesReady) localStorage.setItem("english-room-reader-voice-accent", voiceAccent); }, [preferencesReady, voiceAccent]);
+  useEffect(() => { if (preferencesReady) localStorage.setItem("english-room-reader-voice-uri", voiceUri); }, [preferencesReady, voiceUri]);
+  useEffect(() => { if (preferencesReady) localStorage.setItem("english-room-reader-voice-rate", String(voiceRate)); }, [preferencesReady, voiceRate]);
+
+  useEffect(() => {
+    if (!("speechSynthesis" in window)) return;
+    const loadVoices = () => setEnglishVoices(window.speechSynthesis.getVoices().filter((voice) => /^en[-_]/i.test(voice.lang)));
+    loadVoices();
+    window.speechSynthesis.addEventListener("voiceschanged", loadVoices);
+    return () => window.speechSynthesis.removeEventListener("voiceschanged", loadVoices);
+  }, []);
+
+  useEffect(() => {
+    const closeFloating = (event: PointerEvent) => {
+      if (quickLookupOpen && quickLookupRef.current && !quickLookupRef.current.contains(event.target as Node)) setQuickLookupOpen(false);
+    };
+    document.addEventListener("pointerdown", closeFloating);
+    return () => document.removeEventListener("pointerdown", closeFloating);
+  }, [quickLookupOpen]);
 
   useEffect(() => {
     applyReaderFocusMode(focusMode);
     const handleKey = (event: KeyboardEvent) => {
       revealToolbar();
       if (event.key === "Escape") {
-        setFocusMode(false); setMoreOpen(false); setSettingsOpen(false); setShelfOpen(false); setWordbookOpen(false);
+        setFocusMode(false); setMoreOpen(false); setSettingsOpen(false); setShelfOpen(false); setWordbookOpen(false); setQuickLookupOpen(false);
         if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
       }
     };
@@ -494,6 +531,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
     const total = Math.max(1, container.scrollHeight - container.clientHeight);
     const ratio = Math.min(1, Math.max(0, container.scrollTop / total));
     const anchor = currentAnchor(container);
+    setMoreOpen(false); setSettingsOpen(false); setQuickLookupOpen(false);
     updateToolbarForPosition(container.scrollTop, container.scrollTop < 90);
     recordProgress(ratio, anchor);
   }
@@ -509,7 +547,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
         const articleTop = window.scrollY + container.getBoundingClientRect().top;
         updateToolbarForPosition(window.scrollY, window.scrollY < articleTop + 90);
         recordProgress(currentPageRatio(container), currentPageAnchor(container));
-        setSelectionAction(null);
+        setSelectionAction(null); setMoreOpen(false); setSettingsOpen(false); setQuickLookupOpen(false);
       });
     };
     window.addEventListener("scroll", handlePageScroll, { passive: true });
@@ -560,7 +598,32 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
 
   function speakEnglish(text: string) {
     if (!("speechSynthesis" in window)) { onNotice("当前浏览器不支持系统朗读"); return; }
-    speechSynthesis.cancel(); const utterance = new SpeechSynthesisUtterance(text); utterance.lang = "en-US"; speechSynthesis.speak(utterance);
+    speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    const preferred = englishVoices.find((voice) => voice.voiceURI === voiceUri)
+      || englishVoices.find((voice) => voice.localService && voiceAccent !== "auto" && voice.lang.toLowerCase().startsWith(voiceAccent.toLowerCase()))
+      || englishVoices.find((voice) => voiceAccent !== "auto" && voice.lang.toLowerCase().startsWith(voiceAccent.toLowerCase()))
+      || englishVoices.find((voice) => voice.default)
+      || englishVoices[0];
+    if (!preferred) onNotice("当前浏览器没有提供英语Voice，将使用浏览器默认英语朗读");
+    if (preferred) utterance.voice = preferred;
+    utterance.lang = preferred?.lang || (voiceAccent === "auto" ? "en-US" : voiceAccent);
+    utterance.rate = voiceRate;
+    speechSynthesis.speak(utterance);
+  }
+
+  function beginResize(kind: "navigator" | "dictionary", event: ReactPointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = kind === "navigator" ? navigatorWidth : dictionaryWidth;
+    const move = (moveEvent: PointerEvent) => {
+      const delta = kind === "navigator" ? moveEvent.clientX - startX : startX - moveEvent.clientX;
+      const value = Math.round(Math.min(kind === "navigator" ? 480 : 560, Math.max(kind === "navigator" ? 240 : 300, startWidth + delta)));
+      if (kind === "navigator") setNavigatorWidth(value); else setDictionaryWidth(value);
+    };
+    const stop = () => { document.removeEventListener("pointermove", move); document.removeEventListener("pointerup", stop); };
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", stop);
   }
 
   async function createFolder() {
@@ -772,6 +835,7 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
   const readerStyle = {
     "--reader-font-size": `${fontSize}px`,
     "--reader-line-height": String(lineHeight),
+    "--reader-content-width": `${contentWidthPx}px`,
   } as CSSProperties;
   const articleWords = vocabulary.filter((item) => item.sourceId === String(readingResource.id));
   const frontmatter = parseFrontmatter(readerMarkdown);
@@ -802,10 +866,12 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
   }
 
   return <>
-  <div className={`reader-shell reader-theme-${readerTheme} reader-spacing-${paragraphSpacing} ${shelfOpen ? "shelf-open" : ""} ${wordbookOpen ? "wordbook-open" : ""} reading-mode-${readingMode} ${focusMode ? "focus-mode" : ""} ${toolbarCompact ? "toolbar-compact" : ""} ${toolbarVisible ? "toolbar-visible" : "toolbar-hidden"}`} onPointerDown={(event) => { if (event.pointerType !== "touch" && !window.matchMedia("(max-width: 760px)").matches) revealToolbar(); }}>
+  <div className={`reader-shell reader-v3 reader-theme-${readerTheme} reader-spacing-${paragraphSpacing} ${shelfOpen ? "shelf-open" : ""} ${wordbookOpen ? "wordbook-open" : ""} reading-mode-${readingMode} ${focusMode ? "focus-mode" : ""} ${toolbarCompact ? "toolbar-compact" : ""} ${toolbarVisible ? "toolbar-visible" : "toolbar-hidden"}`} onPointerDown={(event) => { if (event.pointerType !== "touch" && !window.matchMedia("(max-width: 760px)").matches) revealToolbar(); }}>
     <span className="reader-toolbar-sensor" onMouseEnter={revealToolbar} aria-hidden="true" />
+    <nav className="reader-rail" aria-label="阅读器快捷导航"><button className={shelfOpen && shelfTab === "articles" ? "active" : ""} onClick={() => { setShelfTab("articles"); setShelfOpen((value) => !(value && shelfTab === "articles")); }} title="书架">☰</button><button className={shelfOpen && shelfTab === "outline" ? "active" : ""} onClick={() => { setShelfTab("outline"); setShelfOpen(true); }} title="目录">≡</button><button className={wordbookOpen ? "active" : ""} onClick={() => setWordbookOpen((value) => !value)} title="随读词典">Aa</button></nav>
     {shelfOpen && <button className="reader-drawer-backdrop" onClick={() => setShelfOpen(false)} aria-label="关闭阅读书架" />}
-    {shelfOpen && <aside className="reader-navigator reader-drawer">
+    {shelfOpen && <aside className="reader-navigator reader-drawer" style={{ width: navigatorWidth }}>
+      <button className="reader-drawer-resizer right" onPointerDown={(event) => beginResize("navigator", event)} aria-label="调整书架宽度" />
       <div className="reader-nav-heading"><div><p className="eyebrow">READING</p><h2>阅读导航</h2></div><button onClick={() => setShelfOpen(false)} aria-label="关闭阅读导航">×</button></div>
       <nav className="reader-drawer-tabs"><button className={shelfTab === "articles" ? "active" : ""} onClick={() => setShelfTab("articles")}>文章</button><button className={shelfTab === "outline" ? "active" : ""} onClick={() => setShelfTab("outline")}>目录</button></nav>
       {shelfTab === "articles" ? <>
@@ -825,10 +891,12 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
           <button className="reader-icon-button" onClick={() => focusMode ? setFocusMode(false) : window.scrollTo({ top: 0, behavior: "smooth" })} aria-label={focusMode ? "退出沉浸阅读" : "回到文章顶部"}>←</button>
           <strong className="reader-toolbar-progress">{progressLabel(selectedProgress?.progressRatio || 0)}</strong>
           <select className="reader-translation-select" value={translationMode} onChange={(event) => setTranslationMode(event.target.value as TranslationMode)} aria-label="翻译显示方式"><option value="original">原文</option><option value="tap" disabled={!articleDocument.hasTranslation}>点按译文</option><option value="bilingual" disabled={!articleDocument.hasTranslation}>双语</option><option value="translation" disabled={!articleDocument.hasTranslation}>译文</option></select>
-          <span className="reader-settings-wrap"><button className="reader-icon-button" onClick={() => { setSettingsOpen((value) => !value); setMoreOpen(false); }} aria-expanded={settingsOpen} aria-label="阅读设置">Aa</button>{settingsOpen && <span className="reader-settings-popover"><label>主题<select value={readerTheme} onChange={(event) => setReaderTheme(event.target.value as ReaderTheme)}><option value="paper">纸张</option><option value="white">白色</option><option value="dark">深色</option></select></label><label>文章字体<select value={fontFamily} onChange={(event) => setFontFamily(event.target.value)}><option value="serif">Serif</option><option value="sans">Sans</option></select></label><span className="reader-setting-group"><span>字号</span><span className="reader-font-stepper"><button onClick={() => setFontSize((value) => Math.max(14, value - 1))}>A−</button><span>{fontSize}px</span><button onClick={() => setFontSize((value) => Math.min(30, value + 1))}>A＋</button></span></span><label>文章行距<select value={lineHeight} onChange={(event) => setLineHeight(Number(event.target.value))}><option value="1.65">紧凑</option><option value="1.9">舒适</option><option value="2.15">宽松</option></select></label><label>正文宽度<select value={contentWidth} onChange={(event) => setContentWidth(event.target.value)}><option value="narrow">窄版</option><option value="standard">标准</option><option value="wide">宽版</option></select></label><label>段间距<select value={paragraphSpacing} onChange={(event) => setParagraphSpacing(event.target.value)}><option value="compact">紧凑</option><option value="standard">标准</option><option value="wide">宽松</option></select></label></span>}</span>
+          <span className="reader-toolbar-size"><button onClick={() => setFontSize((value) => Math.max(14, value - 1))} aria-label="减小正文字号">A−</button><span>{fontSize}</span><button onClick={() => setFontSize((value) => Math.min(30, value + 1))} aria-label="增大正文字号">A＋</button></span>
+          <button className="reader-width-button" onClick={() => setContentWidthPx((value) => value < 760 ? 820 : value < 950 ? 1040 : 680)} title="在窄、标准、宽版之间切换">宽度 {contentWidthPx}</button>
+          <span className="reader-settings-wrap"><button className="reader-icon-button" onClick={() => { setSettingsOpen((value) => !value); setMoreOpen(false); }} aria-expanded={settingsOpen} aria-label="阅读设置">Aa</button>{settingsOpen && <span className="reader-settings-popover"><label>主题<select value={readerTheme} onChange={(event) => setReaderTheme(event.target.value as ReaderTheme)}><option value="paper">纸张</option><option value="white">白色</option><option value="dark">深色</option></select></label><label>文章字体<select value={fontFamily} onChange={(event) => setFontFamily(event.target.value)}><option value="serif">Serif</option><option value="sans">Sans</option></select></label><span className="reader-setting-group"><span>字号</span><span className="reader-font-stepper"><button onClick={() => setFontSize((value) => Math.max(14, value - 1))}>A−</button><span>{fontSize}px</span><button onClick={() => setFontSize((value) => Math.min(30, value + 1))}>A＋</button></span></span><label>文章行距<select value={lineHeight} onChange={(event) => setLineHeight(Number(event.target.value))}><option value="1.65">紧凑</option><option value="1.9">舒适</option><option value="2.15">宽松</option></select></label><span className="reader-width-presets"><span>正文宽度</span><button onClick={() => setContentWidthPx(680)}>窄</button><button onClick={() => setContentWidthPx(820)}>标准</button><button onClick={() => setContentWidthPx(1040)}>宽</button></span><label>连续宽度 <output>{contentWidthPx}px</output><input type="range" min="680" max="1200" step="20" value={contentWidthPx} onChange={(event) => setContentWidthPx(Number(event.target.value))} /></label><label>段间距<select value={paragraphSpacing} onChange={(event) => setParagraphSpacing(event.target.value)}><option value="compact">紧凑</option><option value="standard">标准</option><option value="wide">宽松</option></select></label><label>朗读口音<select value={voiceAccent} onChange={(event) => setVoiceAccent(event.target.value as "auto" | "en-US" | "en-GB")}><option value="auto">自动</option><option value="en-US">美式</option><option value="en-GB">英式</option></select></label><label>系统英文声音<select value={voiceUri} onChange={(event) => setVoiceUri(event.target.value)}><option value="">自动选择</option>{englishVoices.map((voice) => <option value={voice.voiceURI} key={voice.voiceURI}>{voice.name} · {voice.lang}</option>)}</select></label><label>朗读速度 <output>{voiceRate.toFixed(2)}×</output><input type="range" min="0.65" max="1.4" step="0.05" value={voiceRate} onChange={(event) => setVoiceRate(Number(event.target.value))} /></label></span>}</span>
           <button className="reader-icon-button" onClick={() => { setShelfTab("articles"); setShelfOpen(true); }} aria-label="打开书架">☰</button>
           <button className={`reader-focus-button ${focusMode ? "active" : ""}`} onClick={() => { setFocusMode((value) => !value); setShelfOpen(false); setWordbookOpen(false); }}>沉浸阅读</button>
-          <span className="reader-more-wrap"><button className="reader-icon-button" onClick={() => { setMoreOpen((value) => !value); setSettingsOpen(false); }} aria-expanded={moreOpen} aria-label="更多阅读操作">⋯</button>{moreOpen && <span className="reader-more-menu"><button onClick={() => { changeReadingMode(readingMode === "page" ? "frame" : "page"); setMoreOpen(false); }}>{readingMode === "page" ? "切换到框内工作台" : "切换到页面阅读"}</button><button onClick={() => { setShelfTab("articles"); setShelfOpen(true); setMoreOpen(false); }}>打开书架</button><button onClick={() => { setShelfTab("outline"); setShelfOpen(true); setMoreOpen(false); }}>文章目录</button><button onClick={() => { setWordbookOpen(true); setMoreOpen(false); }}>完整词典</button><button onClick={() => void toggleFullscreen()}>{fullscreen ? "退出全屏" : "进入全屏"}</button><button onClick={() => { setSettingsOpen(true); setMoreOpen(false); }}>阅读设置</button></span>}</span>
+          <span className="reader-more-wrap"><button className="reader-icon-button" onClick={() => { setMoreOpen((value) => !value); setSettingsOpen(false); }} aria-expanded={moreOpen} aria-label="更多阅读操作">⋯</button>{moreOpen && <span className="reader-more-menu"><button onClick={() => { changeReadingMode(readingMode === "page" ? "frame" : "page"); setMoreOpen(false); }}>{readingMode === "page" ? "切换到框内工作台" : "切换到页面阅读"}</button><button onClick={() => { setShelfTab("outline"); setShelfOpen(true); setMoreOpen(false); }}>文章目录</button><button onClick={() => { setWordbookOpen(true); setMoreOpen(false); }}>完整词典</button><button onClick={() => void toggleFullscreen()}>{fullscreen ? "退出全屏" : "进入全屏"}</button><button onClick={() => { setSettingsOpen(true); setMoreOpen(false); }}>阅读设置</button></span>}</span>
         </div>
         <div className="reader-progress-track"><span style={{ width: `${Math.round((selectedProgress?.progressRatio || 0) * 100)}%` }} /></div>
       </header>
@@ -847,9 +915,10 @@ export default function ArticleReader({ courses, resources, vocabulary, onReload
       </div>
     </section>
 
-    {quickLookupOpen && lookup && <aside className="reader-quick-lookup" style={{ top: quickLookupPosition.top, left: quickLookupPosition.left }} aria-live="polite"><button className="reader-quick-close" onClick={() => setQuickLookupOpen(false)} aria-label="关闭释义">×</button><div><strong>{lookup.word}</strong>{lookup.phonetic && <span>{lookup.phonetic}</span>}</div><p>{lookupLoading ? "正在查询当前语境…" : lookup.dictionaryDefinition || lookup.aiDetails.context?.[0] || "暂未查询到核心释义"}</p><footer><button disabled={lookupLoading} onClick={() => void addLookupToWordbook()}>保存</button><button onClick={() => { setQuickLookupOpen(false); setWordbookOpen(true); }}>更多</button></footer></aside>}
+    {quickLookupOpen && lookup && <aside ref={quickLookupRef} className="reader-quick-lookup" style={{ top: quickLookupPosition.top, left: quickLookupPosition.left }} aria-live="polite"><button className="reader-quick-close" onClick={() => setQuickLookupOpen(false)} aria-label="关闭释义">×</button><div><strong>{lookup.word}</strong>{lookup.phonetic && <span>{lookup.phonetic}</span>}</div><p>{lookupLoading ? "正在查询当前语境…" : lookup.dictionaryDefinition || lookup.aiDetails.context?.[0] || "暂未查询到核心释义"}</p><footer><button disabled={lookupLoading} onClick={() => void addLookupToWordbook()}>保存</button><button onClick={() => { setQuickLookupOpen(false); setWordbookOpen(true); }}>更多</button></footer></aside>}
     {wordbookOpen && <button className="reader-dictionary-backdrop" onClick={() => setWordbookOpen(false)} aria-label="关闭阅读词典" />}
-    {wordbookOpen && <aside className="reader-dictionary reader-drawer">
+    {wordbookOpen && <aside className="reader-dictionary reader-drawer" style={{ width: dictionaryWidth }}>
+      <button className="reader-drawer-resizer left" onPointerDown={(event) => beginResize("dictionary", event)} aria-label="调整词典宽度" />
       <div className="reader-dictionary-heading"><div><p className="eyebrow">CONTEXT DICTIONARY</p><h2>随读词典</h2><p>选中正文中的单词或短语，解释只针对当前词项和原句语境。</p></div><button onClick={() => setWordbookOpen(false)} aria-label="关闭阅读词典">×</button></div>
       {sentenceInsight ? <div className="reader-sentence-insight"><span>{sentenceInsight.action === "explain" ? "句子解释" : "句子翻译"}</span><blockquote>{sentenceInsight.text}</blockquote><p>{sentenceLoading ? "正在处理…" : sentenceInsight.result}</p></div> : lookup ? <div className="reader-word-detail">
         <div className="reader-word-title"><div><strong>{lookup.word}</strong><span>{lookup.phonetic}</span></div><i>{lookupLoading ? "查询中…" : lookup.aiEnhanced ? "AI 已结合本句" : "基础词典结果"}</i></div>

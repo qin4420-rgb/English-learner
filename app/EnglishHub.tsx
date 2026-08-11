@@ -53,6 +53,7 @@ export default function EnglishHub({ displayName }: { displayName: string }) {
   const [view, setViewState] = useState<View>("desk");
   const [deskTab, setDeskTabState] = useState<DeskTab>("overview");
   const [deskMenuOpen, setDeskMenuOpen] = useState(true);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [fontSize, setFontSize] = useState<FontSize>("standard");
   const [resources, setResources] = useState<ResourceItem[]>([]);
   const [progress, setProgress] = useState<ProgressItem[]>([]);
@@ -101,6 +102,7 @@ export default function EnglishHub({ displayName }: { displayName: string }) {
       const hash = window.location.hash.replace("#", "");
       const savedFontSize = window.localStorage.getItem("english-room-font-size") as FontSize | null;
       if (savedFontSize && ["compact", "standard", "large", "xlarge"].includes(savedFontSize)) setFontSize(savedFontSize);
+      setSidebarCollapsed(window.localStorage.getItem("english-room-sidebar-collapsed") === "true");
       if (hash === "dashboard") setViewState("desk");
       else if (hash === "course" || hash === "desk-nce") { setViewState("desk"); setDeskTabState("listening"); }
       else if (hash === "progress") { setViewState("desk"); setDeskTabState("progress"); }
@@ -117,6 +119,16 @@ export default function EnglishHub({ displayName }: { displayName: string }) {
     document.documentElement.dataset.fontSize = fontSize;
     window.localStorage.setItem("english-room-font-size", fontSize);
   }, [fontSize]);
+
+  useEffect(() => {
+    window.localStorage.setItem("english-room-sidebar-collapsed", String(sidebarCollapsed));
+  }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timeout = window.setTimeout(() => setNotice(""), notice.length > 56 ? 9000 : 5500);
+    return () => window.clearTimeout(timeout);
+  }, [notice]);
 
   function setView(next: View) {
     setViewState(next);
@@ -188,11 +200,12 @@ export default function EnglishHub({ displayName }: { displayName: string }) {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <aside className="sidebar">
         <button className="brand" onClick={() => setView("desk")}><span className="brand-mark">E</span><span><strong>English Room</strong><small>私人英语学习空间</small></span></button>
+        <button className="sidebar-collapse" onClick={() => setSidebarCollapsed((value) => !value)} aria-label={sidebarCollapsed ? "展开侧栏" : "收起侧栏"} title={sidebarCollapsed ? "展开侧栏" : "收起侧栏"}>{sidebarCollapsed ? "»" : "«"}</button>
         <nav className="main-nav" aria-label="主导航">
-          {NAVIGATION.map((item) => <div className="nav-group" key={item.id}><button className={view === item.id ? "active" : ""} onClick={() => item.id === "desk" && view === "desk" ? setDeskMenuOpen((open) => !open) : setView(item.id)}><span>{item.icon}</span>{item.label}{item.id === "desk" && <em>{view === "desk" && deskMenuOpen ? "⌃" : "⌄"}</em>}</button>{item.id === "desk" && view === "desk" && deskMenuOpen && <div className="desk-subnav"><div><small>学习课程</small><button className="subnav-pin" onClick={() => setDeskMenuOpen(false)}>收起</button></div>{DESK_TABS.map((tab) => <button key={tab.id} className={deskTab === tab.id ? "active" : ""} onClick={() => setDeskTab(tab.id)}><span>{tab.icon}</span>{tab.label}</button>)}</div>}</div>)}
+          {NAVIGATION.map((item) => <div className="nav-group" key={item.id}><button className={view === item.id ? "active" : ""} title={item.label} onClick={() => item.id === "desk" && view === "desk" ? setDeskMenuOpen((open) => !open) : setView(item.id)}><span>{item.icon}</span><b>{item.label}</b>{item.id === "desk" && <em>{view === "desk" && deskMenuOpen ? "⌃" : "⌄"}</em>}</button>{item.id === "desk" && view === "desk" && deskMenuOpen && <div className="desk-subnav"><div><small>学习课程</small><button className="subnav-pin" onClick={() => setDeskMenuOpen(false)}>收起</button></div>{DESK_TABS.map((tab) => <button key={tab.id} className={deskTab === tab.id ? "active" : ""} title={tab.label} onClick={() => setDeskTab(tab.id)}><span>{tab.icon}</span>{tab.label}</button>)}</div>}</div>)}
         </nav>
         <div className="sidebar-note"><span className="status-dot" /><div><strong>个人数据空间</strong><small>{oneDrive?.connected ? "OneDrive 已连接" : "等待连接个人版 OneDrive"}</small></div></div>
       </aside>
