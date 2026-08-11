@@ -6,7 +6,7 @@ export async function POST(request: Request) {
     await ensureDatabase(); const ownerId = await getOwnerId();
     const body = await request.json() as {
       ids?: number[];
-      action?: "delete" | "archive" | "category" | "folder" | "addTags" | "removeTags" | "hide" | "renameCategory" | "mergeCategory" | "deleteCategory";
+      action?: "delete" | "archive" | "restore" | "favorite" | "unfavorite" | "category" | "folder" | "addTags" | "removeTags" | "hide" | "renameCategory" | "mergeCategory" | "deleteCategory";
       category?: string;
       fromCategory?: string;
       targetCategory?: string;
@@ -29,6 +29,10 @@ export async function POST(request: Request) {
       await getDatabase().prepare(`DELETE FROM resources WHERE owner_id=? AND collection='tool' AND id IN (${placeholders})`).bind(ownerId, ...ids).run();
     } else if (body.action === "archive") {
       await getDatabase().prepare(`UPDATE resources SET status='archived',updated_at=CURRENT_TIMESTAMP WHERE owner_id=? AND id IN (${placeholders})`).bind(ownerId, ...ids).run();
+    } else if (body.action === "restore") {
+      await getDatabase().prepare(`UPDATE resources SET status='active',updated_at=CURRENT_TIMESTAMP WHERE owner_id=? AND id IN (${placeholders})`).bind(ownerId, ...ids).run();
+    } else if (body.action === "favorite" || body.action === "unfavorite") {
+      await getDatabase().prepare(`UPDATE resources SET is_favorite=?,updated_at=CURRENT_TIMESTAMP WHERE owner_id=? AND collection='library' AND id IN (${placeholders})`).bind(body.action === "favorite" ? 1 : 0, ownerId, ...ids).run();
     } else if (body.action === "category") {
       if (!body.category?.trim()) return jsonError(new Error("请输入新的分类"), 400);
       await getDatabase().prepare(`UPDATE resources SET category=?,updated_at=CURRENT_TIMESTAMP WHERE owner_id=? AND id IN (${placeholders})`).bind(body.category.trim(), ownerId, ...ids).run();

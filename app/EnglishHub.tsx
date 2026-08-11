@@ -22,6 +22,7 @@ import type { LearningUse } from "./resource-model";
 
 type View = "desk" | "tools" | "library" | "admin";
 type FontSize = "compact" | "standard" | "large" | "xlarge";
+type MaintenanceTarget = { section: "processing" | "providers"; jobId?: number; resourceId?: number };
 
 const NAVIGATION: { id: View; label: string; icon: string }[] = [
   { id: "desk", label: "学习台", icon: "⌂" },
@@ -70,6 +71,7 @@ export default function EnglishHub({ displayName }: { displayName: string }) {
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState("");
   const [importing, setImporting] = useState(false);
+  const [maintenanceTarget, setMaintenanceTarget] = useState<MaintenanceTarget | null>(null);
 
   const loadResources = useCallback(async () => setResources((await jsonRequest<{ resources: ResourceItem[] }>("/api/resources")).resources), []);
   const loadProgress = useCallback(async () => setProgress((await jsonRequest<{ progress: ProgressItem[] }>("/api/progress")).progress), []);
@@ -131,11 +133,19 @@ export default function EnglishHub({ displayName }: { displayName: string }) {
   }, [notice]);
 
   function setView(next: View) {
+    if (next === "admin") setMaintenanceTarget(null);
     setViewState(next);
     if (next === "desk") setDeskMenuOpen(true);
     window.history.replaceState(null, "", `#${next}`);
     window.scrollTo({ top: 0, behavior: "smooth" });
     if (next === "tools" && !resources.some((item) => item.collection === "tool") && !importing) void importDirectory();
+  }
+
+  function openMaintenance(target: MaintenanceTarget) {
+    setMaintenanceTarget(target);
+    setViewState("admin");
+    window.history.replaceState(null, "", "#admin");
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   function setDeskTab(next: DeskTab) {
@@ -220,8 +230,8 @@ export default function EnglishHub({ displayName }: { displayName: string }) {
           {loading ? <div className="loading-screen"><span className="loader" />正在打开你的学习空间…</div> : <>
             {view === "desk" && <LearningDesk activeTab={deskTab} onTabChange={setDeskTab} courses={courses} resources={resources} notes={notes} vocabulary={vocabulary} progress={progress} activities={activities} plans={plans} providers={providers} onReloadResources={loadResources} onReloadCourses={loadCourses} onReloadNotes={loadNotes} onReloadVocabulary={loadVocabulary} onReloadProgress={loadProgress} onReloadActivities={loadActivities} onReloadPlans={loadPlans} onNotice={setNotice} />}
             {view === "tools" && <ToolDirectory resources={resources} importing={importing} onImport={importDirectory} onReload={loadResources} onNotice={setNotice} onToggleFavorite={toggleFavorite} onRemove={removeResource} onReorder={reorderResources} />}
-            {view === "library" && <ResourceLibrary resources={resources} onRead={(resource) => startLearning(resource, "Reading")} onStartLearning={startLearning} onReloadResources={loadResources} onNotice={setNotice} onToggleFavorite={toggleFavorite} />}
-            {view === "admin" && <MaintenanceCenter oneDrive={oneDrive} aiConfigured={aiConfigured} providers={providers} jobs={jobs} uploads={uploads} resources={resources} onReload={refreshAll} onNotice={setNotice} onExport={exportData} />}
+            {view === "library" && <ResourceLibrary resources={resources} jobs={jobs} onRead={(resource) => startLearning(resource, "Reading")} onStartLearning={startLearning} onOpenMaintenance={openMaintenance} onReloadResources={loadResources} onNotice={setNotice} onToggleFavorite={toggleFavorite} />}
+            {view === "admin" && <MaintenanceCenter initialTarget={maintenanceTarget} oneDrive={oneDrive} aiConfigured={aiConfigured} providers={providers} jobs={jobs} uploads={uploads} resources={resources} onReload={refreshAll} onNotice={setNotice} onExport={exportData} />}
           </>}
         </div>
         <footer><span>English Room · 私人英语学习空间</span><span>Markdown 内容与学习记录由你维护 · 外部资源版权归原作者所有</span></footer>

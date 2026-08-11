@@ -9,7 +9,8 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import ResourceReviewWorkspace from "./components/ResourceReviewWorkspace";
 import type { DictionarySourceItem, OneDriveStatus, ProcessingJob, ProcessingJobStep, ProviderStatus, ResourceItem, UploadItem } from "./types";
 
-type Props = { oneDrive: OneDriveStatus | null; aiConfigured: boolean; providers: ProviderStatus[]; jobs: ProcessingJob[]; uploads: UploadItem[]; resources: ResourceItem[]; onReload: () => Promise<void>; onNotice: (message: string) => void; onExport: () => void };
+type MaintenanceTarget = { section: "processing" | "providers"; jobId?: number; resourceId?: number };
+type Props = { initialTarget?: MaintenanceTarget | null; oneDrive: OneDriveStatus | null; aiConfigured: boolean; providers: ProviderStatus[]; jobs: ProcessingJob[]; uploads: UploadItem[]; resources: ResourceItem[]; onReload: () => Promise<void>; onNotice: (message: string) => void; onExport: () => void };
 type CenterSection = "processing" | "dictionaries" | "vocabulary" | "providers" | "data";
 type ProcessingTab = "queue" | "review" | "history";
 type AddMode = "file" | "url" | "paste";
@@ -42,13 +43,13 @@ function reviewInfo(resource: ResourceItem) {
   } catch { return { errors: 0, warnings: 0, translated: 0, total: 0 }; }
 }
 
-export default function MaintenanceCenter({ oneDrive, aiConfigured, providers, jobs, uploads, resources, onReload, onNotice, onExport }: Props) {
-  const [section, setSection] = useState<CenterSection>("processing");
-  const [processingTab, setProcessingTab] = useState<ProcessingTab>("queue");
+export default function MaintenanceCenter({ initialTarget, oneDrive, aiConfigured, providers, jobs, uploads, resources, onReload, onNotice, onExport }: Props) {
+  const [section, setSection] = useState<CenterSection>(initialTarget?.section || "processing");
+  const [processingTab, setProcessingTab] = useState<ProcessingTab>(initialTarget?.resourceId ? "review" : "queue");
   const [jobList, setJobList] = useState(jobs);
-  const [selectedJobId, setSelectedJobId] = useState(0);
+  const [selectedJobId, setSelectedJobId] = useState(initialTarget?.jobId || 0);
   const [selectedStepKey, setSelectedStepKey] = useState("");
-  const [reviewResourceId, setReviewResourceId] = useState(0);
+  const [reviewResourceId, setReviewResourceId] = useState(initialTarget?.resourceId || 0);
   const [addOpen, setAddOpen] = useState(false);
   const [addMode, setAddMode] = useState<AddMode>("file");
   const [busy, setBusy] = useState(false);

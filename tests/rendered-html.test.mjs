@@ -81,6 +81,25 @@ test("V2 resource core uses stable types, reviewable processing and source-aware
   assert.match(processing, /review_required/);
 });
 
+test("Resource Library 3.0 keeps navigation, actions and batch maintenance discoverable", async () => {
+  const [library, actions, batchRoute] = await Promise.all([
+    readFile(new URL("../app/ResourceLibrary.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/library/resource-actions.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/resources/batch/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(library, /RESOURCE LIBRARY 3\.0/);
+  assert.match(library, /继续学习/);
+  assert.match(library, /收件箱/);
+  assert.match(library, /library-inspector/);
+  assert.match(library, /useDeferredValue/);
+  assert.match(library, /快速预览不会写入阅读进度/);
+  assert.match(actions, /resourceDefaultAction/);
+  assert.match(actions, /review_required/);
+  assert.match(actions, /buildResourceActions/);
+  assert.match(batchRoute, /"restore"/);
+  assert.match(batchRoute, /"favorite"/);
+});
+
 test("Reader 3.0 canonical blocks keep translation IDs stable and reviewable", async () => {
   const { canonicalBlocks, inspectTranslationResult, renderReviewMarkdown, parseReviewMarkdown } = await import("../app/article-review.mjs");
   const blocks = canonicalBlocks("## First heading\n\nA complete first paragraph.\n\n> A quoted sentence.");
