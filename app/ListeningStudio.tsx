@@ -26,6 +26,11 @@ function mediaSegments(resource: ResourceItem): MediaSegment[] {
   return parseResourceMetadata(resource.metadataJson, resource.resourceType).mediaSegments;
 }
 
+function mediaSource(resource: ResourceItem) {
+  const metadata = parseResourceMetadata(resource.metadataJson, resource.resourceType);
+  return String(metadata.media?.source || metadata.podcast?.audioUrl || (metadata.uploadId ? `/api/resources/${resource.id}/media` : resource.sourceUrl || resource.url));
+}
+
 export default function ListeningStudio({ resources, progress, onReloadProgress, onReloadResources, onNotice }: Props) {
   const [section, setSection] = useState<"mine" | "nce" | "podcast">("mine");
   const mediaResources = useMemo(() => resources.filter((resource) => resource.collection === "library" && !["hidden", "archived"].includes(resource.status) && mediaKind(resource)), [resources]);
@@ -55,7 +60,7 @@ export default function ListeningStudio({ resources, progress, onReloadProgress,
     {section === "nce" ? <NcePlayer progress={progress} onSaved={onReloadProgress} onNotice={onNotice} /> : section === "podcast" ? <PodcastStudio resources={resources} progress={progress} onReloadResources={onReloadResources} onReloadProgress={onReloadProgress} onNotice={onNotice} /> : <>
       {selected && selectedKind ? <div className="listening-resource-layout">
         <aside className="panel media-resource-list"><div className="panel-heading"><div><p className="eyebrow">MY MEDIA</p><h2>我的资料</h2></div></div>{mediaResources.map((resource) => <button className={resource.id === selected.id ? "active" : ""} key={resource.id} onClick={() => { setSelectedId(resource.id); localStorage.setItem("english-room-media-resource", String(resource.id)); }}><span>{mediaKind(resource) === "video" ? "VIDEO" : "AUDIO"}</span><div><strong>{resource.title}</strong><small>{mediaSegments(resource).length ? `${mediaSegments(resource).length} 句文字稿` : "文字稿尚未生成"}</small></div></button>)}</aside>
-        <MediaLearningPlayer key={selected.id} kind={selectedKind} src={selected.sourceUrl || selected.url} title={selected.title} segments={segments} initialTime={(selectedProgress?.progressSeconds || 0) * 1000} onProgressSave={saveProgress} onSegmentAction={(action) => onNotice(action === "lookup" ? "句子查词入口已保留；可在阅读器与词汇详情中查看上下文。" : action === "shadow" ? "可切换到口语训练按句跟读。" : "句子已标记。")}/>
+        <MediaLearningPlayer key={selected.id} kind={selectedKind} src={mediaSource(selected)} title={selected.title} segments={segments} initialTime={(selectedProgress?.progressSeconds || 0) * 1000} onProgressSave={saveProgress} onSegmentAction={(action) => onNotice(action === "lookup" ? "句子查词入口已保留；可在阅读器与词汇详情中查看上下文。" : action === "shadow" ? "可切换到口语训练按句跟读。" : "句子已标记。")}/>
       </div> : <div className="panel empty-state"><strong>还没有音频或视频学习资料</strong><span>在资源库添加 Audio / Video 类型资源后，会自动出现在这里。</span></div>}
       {showDevelopmentDemo && <details className="panel media-development-demo"><summary>播放器开发验收 Demo</summary><p>仅在本地开发环境显示，不会写入正式资源库。</p><MediaLearningPlayer kind="video" src={DEVELOPMENT_VIDEO_FIXTURE.src} title={DEVELOPMENT_VIDEO_FIXTURE.title} segments={DEVELOPMENT_VIDEO_FIXTURE.segments} /></details>}
     </>}

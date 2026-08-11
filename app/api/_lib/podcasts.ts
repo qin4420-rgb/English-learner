@@ -1,11 +1,7 @@
-import { translateBlocks } from "./distill";
-import { runSTTUrl } from "./providers";
-import { getDatabase, getRuntimeBindings } from "./runtime";
-import { parseResourceMetadata, stringifyResourceMetadata } from "@/app/resource-model";
+import { parseResourceMetadata } from "@/app/resource-model";
 import { parseApplePodcastUrl } from "@/app/apple-podcasts.mjs";
 import type { MediaSegment } from "@/app/types";
 
-type ProcessPodcastInput = { ownerId: string; resourceId: number; jobId: number };
 type LookupResult = {
   wrapperType?: string;
   kind?: string;
@@ -16,6 +12,18 @@ type LookupResult = {
   feedUrl?: string;
   episodeUrl?: string;
   trackTimeMillis?: number;
+};
+
+export type PodcastMediaSource = {
+  title: string;
+  description: string;
+  audioUrl: string;
+  durationMs: number;
+  segments: MediaSegment[];
+  transcriptText: string;
+  transcriptSource: string;
+  restricted: boolean;
+  podcast: Record<string, unknown>;
 };
 
 function decodeXml(value: string) {
@@ -121,7 +129,7 @@ function parseTimedText(value: string): MediaSegment[] {
     const endMs = toMilliseconds(endValue);
     const originalText = stripMarkup(lines.slice(timingIndex + 1).join(" "));
     if (!Number.isFinite(startMs) || !originalText) continue;
-    segments.push({ id: `s${String(segments.length + 1).padStart(4, "0")}`, startMs, endMs: Number.isFinite(endMs) ? endMs : undefined, originalText });
+    segments.push({ id: `s${String(segments.length + 1).padStart(4, "0")}`, startMs, endMs: Number.isFinite(endMs) && endMs > startMs ? endMs : startMs + 5000, originalText });
   }
   return segments;
 }
@@ -136,7 +144,7 @@ function parseJsonTranscript(value: string): MediaSegment[] {
     const endMs = end > 10000 ? end : end * 1000;
     const originalText = String(item.body ?? item.text ?? item.originalText ?? "").trim();
     if (!Number.isFinite(startMs) || !originalText) return [];
-    return [{ id: `s${String(index + 1).padStart(4, "0")}`, startMs, endMs: Number.isFinite(endMs) ? endMs : undefined, originalText }];
+    return [{ id: `s${String(index + 1).padStart(4, "0")}`, startMs, endMs: Number.isFinite(endMs) && endMs > startMs ? endMs : startMs + 5000, originalText }];
   });
 }
 
@@ -160,134 +168,37 @@ async function fetchPublicTranscript(items: { url: string; type: string; rel: st
   return { segments: [] as MediaSegment[], transcriptText: "", source: "" };
 }
 
-function normalizeProviderSegments(value: unknown[]): MediaSegment[] {
-  return value.flatMap((entry, index) => {
-    if (!entry || typeof entry !== "object") return [];
-    const item = entry as Record<string, unknown>;
-    const rawStart = Number(item.startMs ?? item.start ?? item.startTime ?? 0);
-    const rawEnd = Number(item.endMs ?? item.end ?? item.endTime ?? Number.NaN);
-    const originalText = String(item.originalText ?? item.text ?? "").trim();
-    if (!Number.isFinite(rawStart) || !originalText) return [];
-    return [{
-      id: `s${String(index + 1).padStart(4, "0")}`,
-      startMs: rawStart > 10000 ? rawStart : rawStart * 1000,
-      endMs: Number.isFinite(rawEnd) ? rawEnd > 10000 ? rawEnd : rawEnd * 1000 : undefined,
-      originalText,
-    }];
-  }).sort((first, second) => first.startMs - second.startMs);
-}
-
-async function updateJob(ownerId: string, jobId: number, stage: string, progress: number) {
-  await getDatabase().prepare("UPDATE processing_jobs SET status='processing',stage=?,progress=?,error='',updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(stage, progress, jobId, ownerId).run();
-}
-
-async function needsProvider(input: ProcessPodcastInput, metadata: Record<string, unknown>, message: string) {
-  await getDatabase().batch([
-    getDatabase().prepare("UPDATE resources SET metadata_json=?,processing_status='needs_provider',updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(JSON.stringify(metadata), input.resourceId, input.ownerId),
-    getDatabase().prepare("UPDATE processing_jobs SET status='needs_provider',stage='等待STT Provider',progress=45,error=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(message, input.jobId, input.ownerId),
-  ]);
-  return { status: "needs_provider" as const };
-}
-
-export async function processPodcastResource(input: ProcessPodcastInput) {
-  const database = getDatabase();
-  const resource = await database.prepare("SELECT * FROM resources WHERE id=? AND owner_id=?").bind(input.resourceId, input.ownerId).first<Record<string, unknown>>();
-  if (!resource) throw new Error("Podcast Resource不存在");
+export async function resolvePodcastMediaSource(resource: Record<string, unknown>): Promise<PodcastMediaSource> {
   const metadata = parseResourceMetadata(resource.metadata_json, "Podcast");
   const currentPodcast = metadata.podcast && typeof metadata.podcast === "object" ? metadata.podcast as Record<string, unknown> : {};
   const parsed = parseApplePodcastUrl(String(currentPodcast.appleUrl || resource.source_url || ""));
-
-  try {
-    await updateJob(input.ownerId, input.jobId, "解析Podcast", 10);
-    const { episode, show } = await appleLookup(parsed.showId, parsed.episodeId);
-    const showTitle = String(episode?.collectionName || show?.collectionName || "Apple Podcasts");
-    const episodeTitle = String(episode?.trackName || resource.title || `Episode ${parsed.episodeId}`);
-    const feedUrl = publicHttpUrl(String(show?.feedUrl || ""));
-
-    await updateJob(input.ownerId, input.jobId, "寻找公开RSS与音频", 25);
-    let rssItem: ReturnType<typeof parseRssItem> = null;
-    if (feedUrl) {
-      try {
-        const response = await fetch(feedUrl, { headers: { accept: "application/rss+xml,application/xml,text/xml" } });
-        if (response.ok) rssItem = parseRssItem(await response.text(), episodeTitle, publicHttpUrl(String(episode?.episodeUrl || "")));
-      } catch { /* iTunes public episode URL remains an allowed fallback. */ }
-    }
-    const audioUrl = rssItem?.audioUrl || publicHttpUrl(String(episode?.episodeUrl || ""));
-    const durationMs = Number(episode?.trackTimeMillis || 0) || 0;
-    const podcastMetadata = {
-      ...currentPodcast,
-      provider: "apple_podcasts",
-      appleUrl: parsed.appleUrl,
-      embedUrl: parsed.embedUrl,
-      showId: parsed.showId,
-      episodeId: parsed.episodeId,
-      showTitle,
-      episodeTitle: rssItem?.title || episodeTitle,
-      feedUrl,
-      audioUrl,
-      durationMs,
-      studyMode: "intensive",
-      intensiveStatus: audioUrl ? "processing" : "failed",
-      audioSource: rssItem?.audioUrl ? "rss_enclosure" : audioUrl ? "itunes_public" : "unavailable",
-    };
-    const discoveredMetadata = { ...metadata, podcast: podcastMetadata };
-    await database.prepare("UPDATE resources SET title=?,description=?,metadata_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?")
-      .bind(podcastMetadata.episodeTitle, rssItem?.description || `${showTitle} · Podcast精听资料`, stringifyResourceMetadata(discoveredMetadata, "Podcast"), input.resourceId, input.ownerId).run();
-    if (!audioUrl) {
-      const message = "此Episode目前只能通过Apple Podcasts播放。泛听可用，精听音频源不可用。";
-      await database.batch([
-        database.prepare("UPDATE resources SET processing_status='failed',updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(input.resourceId, input.ownerId),
-        database.prepare("UPDATE processing_jobs SET status='failed',stage='公开音频不可用',progress=30,error=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(message, input.jobId, input.ownerId),
-      ]);
-      return { status: "failed" as const, reason: "audio_unavailable" };
-    }
-
-    await updateJob(input.ownerId, input.jobId, "获取公开Transcript", 38);
-    const publicTranscript = await fetchPublicTranscript(rssItem?.transcripts || []);
-    let segments = publicTranscript.segments;
-    let transcriptSource = publicTranscript.source ? "rss_transcript" : "";
-    if (!segments.length) {
-      if (!getRuntimeBindings().STT_ENDPOINT || !getRuntimeBindings().STT_PROVIDER) {
-        return needsProvider(input, {
-          ...discoveredMetadata,
-          podcast: { ...podcastMetadata, intensiveStatus: "needs_provider", transcriptSource: publicTranscript.source || "", transcriptText: publicTranscript.transcriptText },
-        }, publicTranscript.transcriptText ? "公开Transcript已找到，但缺少可同步时间轴；STT Provider尚未配置。" : "音频已找到。STT Provider尚未配置。");
-      }
-      await updateJob(input.ownerId, input.jobId, "STT文字稿", 55);
-      const transcribed = await runSTTUrl(audioUrl);
-      segments = normalizeProviderSegments(transcribed.segments);
-      transcriptSource = "stt_provider";
-      if (!segments.length && transcribed.text) {
-        segments = [{ id: "s0001", startMs: 0, endMs: durationMs || undefined, originalText: transcribed.text }];
-      }
-    }
-
-    await updateJob(input.ownerId, input.jobId, "中文分段翻译", 78);
-    let translations = new Map<string, string>();
+  const { episode, show } = await appleLookup(parsed.showId, parsed.episodeId);
+  const showTitle = String(episode?.collectionName || show?.collectionName || "Apple Podcasts");
+  const episodeTitle = String(episode?.trackName || resource.title || `Episode ${parsed.episodeId}`);
+  const feedUrl = publicHttpUrl(String(show?.feedUrl || ""));
+  let rssItem: ReturnType<typeof parseRssItem> = null;
+  if (feedUrl) {
     try {
-      translations = await translateBlocks(segments.map((segment) => ({ id: String(segment.id), text: segment.originalText })));
-    } catch { /* English transcript remains reviewable when AI translation is unavailable. */ }
-    const translatedSegments = segments.map((segment) => ({ ...segment, translationText: translations.get(String(segment.id)) || segment.translationText }));
-    const finalMetadata = stringifyResourceMetadata({
-      ...discoveredMetadata,
-      podcast: { ...podcastMetadata, intensiveStatus: "review_required", transcriptSource, transcriptText: publicTranscript.transcriptText },
-      mediaSegments: translatedSegments,
-      learningUses: ["Listening", "Speaking", "Vocabulary"],
-    }, "Podcast");
-    await database.batch([
-      database.prepare("UPDATE resources SET metadata_json=?,processing_status='review_required',translation_status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?")
-        .bind(finalMetadata, translations.size ? "complete" : "pending", input.resourceId, input.ownerId),
-      database.prepare("UPDATE processing_jobs SET status='review_required',stage='精听资料待复核',progress=100,result_resource_id=?,completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?")
-        .bind(input.resourceId, input.jobId, input.ownerId),
-    ]);
-    return { status: "review_required" as const, segmentCount: translatedSegments.length };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Podcast处理失败";
-    const failedMetadata = stringifyResourceMetadata({ ...metadata, podcast: { ...currentPodcast, intensiveStatus: "failed" } }, "Podcast");
-    await database.batch([
-      database.prepare("UPDATE resources SET metadata_json=?,processing_status='failed',updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(failedMetadata, input.resourceId, input.ownerId),
-      database.prepare("UPDATE processing_jobs SET status='failed',stage='Podcast处理失败',error=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(message, input.jobId, input.ownerId),
-    ]);
-    throw error;
+      const response = await fetch(feedUrl, { headers: { accept: "application/rss+xml,application/xml,text/xml" } });
+      if (response.ok) rssItem = parseRssItem(await response.text(), episodeTitle, publicHttpUrl(String(episode?.episodeUrl || "")));
+    } catch { /* A missing RSS feed leaves the official extensive-listening path intact. */ }
   }
+  const audioUrl = rssItem?.audioUrl || publicHttpUrl(String(episode?.episodeUrl || ""));
+  const durationMs = Number(episode?.trackTimeMillis || 0) || 0;
+  const publicTranscript = await fetchPublicTranscript(rssItem?.transcripts || []);
+  return {
+    title: rssItem?.title || episodeTitle,
+    description: rssItem?.description || `${showTitle} · Podcast精听资料`,
+    audioUrl,
+    durationMs,
+    segments: publicTranscript.segments,
+    transcriptText: publicTranscript.transcriptText,
+    transcriptSource: publicTranscript.source ? "rss" : "",
+    restricted: !audioUrl,
+    podcast: {
+      ...currentPodcast, provider: "apple_podcasts", appleUrl: parsed.appleUrl, embedUrl: parsed.embedUrl,
+      showId: parsed.showId, episodeId: parsed.episodeId, showTitle, episodeTitle: rssItem?.title || episodeTitle,
+      feedUrl, audioUrl, durationMs, studyMode: "intensive", audioSource: rssItem?.audioUrl ? "rss_enclosure" : audioUrl ? "itunes_public" : "unavailable",
+    },
+  };
 }

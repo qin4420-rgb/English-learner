@@ -1,0 +1,11 @@
+import type { MediaSegment, ReviewIssue } from "./types";
+export function parseMediaTime(value: string | number): number;
+export function formatMediaTime(milliseconds: number): string;
+export function parseTimedSubtitle(value: string, source?: "srt" | "vtt" | string): MediaSegment[];
+export function normalizeProviderSegments(value: unknown[]): MediaSegment[];
+export function normalizeMediaSegments(value: unknown, options?: { durationMs?: number }): MediaSegment[];
+export function chooseTranscriptSource(input?: { sidecarSegments?: unknown[]; resourceSegments?: unknown[]; rssSegments?: unknown[]; publicSegments?: unknown[]; sttSegments?: unknown[]; durationMs?: number }): { source: string; segments: MediaSegment[] };
+export function pendingMediaTranslation(segments: MediaSegment[], translations?: Record<string, string>): MediaSegment[];
+export function validateMediaDraft(segments: MediaSegment[], metadata?: { durationMs?: number; mediaKind?: string; playableSource?: string; transcriptSource?: string; translationEntries?: { id?: string; translation?: string; translationText?: string }[] }): { totalSegments: number; translatedSegments: number; issues: ReviewIssue[]; checkedAt: string };
+export function mergeMediaSegments(segments: MediaSegment[], index: number, offset: -1 | 1): MediaSegment[];
+export function splitMediaSegment(segments: MediaSegment[], index: number, characterOffset: number): MediaSegment[];

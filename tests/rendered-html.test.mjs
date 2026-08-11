@@ -211,7 +211,72 @@ test("Podcast integration reuses Resource, Processing and MediaLearningPlayer", 
   assert.match(embed, /allow-top-navigation-by-user-activation/);
   assert.match(route, /applePodcastResourceKey/);
   assert.match(route, /ON CONFLICT|SELECT \* FROM resources/);
-  assert.match(processing, /寻找公开RSS与音频/);
-  assert.match(processing, /等待STT Provider/);
-  assert.match(processing, /translateBlocks/);
+  assert.match(processing, /resolvePodcastMediaSource/);
+  assert.match(processing, /fetchPublicTranscript/);
+  assert.match(processing, /restricted: !audioUrl/);
+});
+
+test("Media Processing 3.0 parses SRT and VTT into stable timed segments", async () => {
+  const { parseTimedSubtitle } = await import("../app/media-processing.mjs");
+  const srt = parseTimedSubtitle("1\n00:00:01,250 --> 00:00:03,500\nHello world.\n\n2\n00:00:04,000 --> 00:00:06,000\nSecond line.", "srt");
+  const vtt = parseTimedSubtitle("WEBVTT\n\n00:00:02.000 --> 00:00:04.250 align:start\nA VTT sentence.", "vtt");
+  assert.deepEqual(srt.map((segment) => segment.id), ["s0001", "s0002"]);
+  assert.deepEqual([srt[0].startMs, srt[0].endMs], [1250, 3500]);
+  assert.equal(vtt[0].id, "s0001");
+  assert.deepEqual([vtt[0].startMs, vtt[0].endMs], [2000, 4250]);
+});
+
+test("Media Processing 3.0 normalizes providers and keeps subtitle priority above STT", async () => {
+  const { chooseTranscriptSource, normalizeMediaSegments, normalizeProviderSegments } = await import("../app/media-processing.mjs");
+  const provider = normalizeProviderSegments([{ start: 1.5, end: 3, text: "Provider segment" }]);
+  assert.deepEqual([provider[0].startMs, provider[0].endMs], [1500, 3000]);
+  const normalized = normalizeMediaSegments([
+    { startMs: 4000, endMs: 3000, originalText: "Later" },
+    { startMs: 0, endMs: 2000, originalText: "First" },
+    { startMs: 0, endMs: 2000, originalText: "First" },
+  ]);
+  assert.deepEqual(normalized.map((segment) => segment.id), ["s0001", "s0002"]);
+  assert.ok(normalized[1].endMs > normalized[1].startMs);
+  const selected = chooseTranscriptSource({ sidecarSegments: normalized.slice(0, 1), sttSegments: provider });
+  assert.equal(selected.source, "sidecar");
+  assert.equal(selected.segments[0].originalText, "First");
+});
+
+test("Media Processing 3.0 resumes translation and reports media QA issues", async () => {
+  const { pendingMediaTranslation, validateMediaDraft } = await import("../app/media-processing.mjs");
+  const segments = Array.from({ length: 100 }, (_, index) => ({ id: `s${String(index + 1).padStart(4, "0")}`, startMs: index * 2000, endMs: index * 2000 + 1800, originalText: `Sentence ${index + 1}.` }));
+  const translations = Object.fromEntries(segments.slice(0, 60).map((segment) => [segment.id, `译文 ${segment.id}`]));
+  assert.equal(pendingMediaTranslation(segments, translations).length, 40);
+  const qa = validateMediaDraft([
+    { id: "s0001", startMs: 5000, endMs: 4000, originalText: "", translationText: "" },
+    { id: "s0002", startMs: 1000, endMs: 2000, originalText: "Valid English", translationText: "" },
+  ], { durationMs: 3000, mediaKind: "audio", playableSource: "https://example.com/audio.mp3", transcriptSource: "srt", translationEntries: [{ id: "unknown", translation: "未知" }] });
+  assert.ok(qa.issues.some((issue) => issue.type === "invalid_end"));
+  assert.ok(qa.issues.some((issue) => issue.type === "timeline_reversed"));
+  assert.ok(qa.issues.some((issue) => issue.type === "missing_translation"));
+  assert.ok(qa.issues.some((issue) => issue.type === "unknown_translation_id"));
+});
+
+test("Media Processing 3.0 keeps draft, published and shared Processing 2.0 wiring explicit", async () => {
+  const [pipeline, reviewRoute, reviewWorkspace, podcastRoute, actions, listening] = await Promise.all([
+    readFile(new URL("../app/api/_lib/resource-processing.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/resources/[id]/media-review/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/MediaReviewWorkspace.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/podcasts/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/library/resource-actions.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/ListeningStudio.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(pipeline, /raw-transcript\.json/);
+  assert.match(pipeline, /draft-media\.json/);
+  assert.match(pipeline, /translation\.json/);
+  assert.match(pipeline, /validateMediaDraft/);
+  assert.match(reviewRoute, /previousPublished/);
+  assert.match(reviewRoute, /mediaSegments: saved\.segments/);
+  assert.match(reviewWorkspace, /MediaLearningPlayer/);
+  assert.match(reviewWorkspace, /当前仅渲染附近最多80条/);
+  assert.match(podcastRoute, /initializeProcessingJob/);
+  assert.doesNotMatch(podcastRoute, /processPodcastResource/);
+  assert.match(actions, /加入精听/);
+  assert.match(actions, /添加字幕/);
+  assert.match(listening, /parseResourceMetadata\(resource\.metadataJson, resource\.resourceType\)\.mediaSegments/);
 });

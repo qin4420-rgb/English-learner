@@ -1,6 +1,6 @@
 "use client";
 
-import { lazy, Suspense, useCallback, useMemo, useRef, useState, type SyntheticEvent } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent } from "react";
 import type { MediaKind, MediaProgressSnapshot, MediaSegment } from "../types";
 import TranscriptPanel from "./TranscriptPanel";
 
@@ -20,6 +20,8 @@ type Props = {
   onProgressSave?: (snapshot: MediaProgressSnapshot) => void | Promise<void>;
   onSegmentChange?: (segment?: MediaSegment) => void;
   onSegmentAction?: (action: "lookup" | "mark" | "shadow", segment: MediaSegment) => void;
+  showTranscript?: boolean;
+  seekRequest?: { segmentId: string; nonce: number } | null;
 };
 
 function validSource(src: string) {
@@ -45,6 +47,8 @@ export default function MediaLearningPlayer({
   onProgressSave,
   onSegmentChange,
   onSegmentAction,
+  showTranscript = true,
+  seekRequest,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -113,6 +117,18 @@ export default function MediaLearningPlayer({
     if (play) void Promise.resolve(element.play()).catch(() => undefined);
   }
 
+  useEffect(() => {
+    if (!seekRequest) return;
+    const segment = segments.find((item) => item.id === seekRequest.segmentId);
+    const element = mediaElement();
+    if (segment && element) {
+      element.currentTime = segment.startMs / 1000;
+      setCurrentTimeMs(segment.startMs);
+      onSeek?.(segment.startMs);
+    }
+    // nonce intentionally makes repeated clicks on the same segment seek again.
+  }, [mediaElement, onSeek, seekRequest, segments]);
+
   function toggleLoop(segment: MediaSegment) {
     const next = loopSegmentId === segment.id ? null : segment.id;
     setLoopSegmentId(next);
@@ -174,6 +190,6 @@ export default function MediaLearningPlayer({
       </div>
       <div className="media-control-row"><div className="media-study-modes"><button className={studyMode === "normal" ? "active" : ""} onClick={() => setStudyMode("normal")}>普通听</button><button className={studyMode === "intensive" ? "active" : ""} onClick={() => setStudyMode("intensive")}>精听</button><button disabled title="听写流程将在后续版本接入">听写</button><button disabled title="跟读与口语评估将在语音 Provider 配置后接入">跟读</button></div><label>速度<select value={playbackRate} onChange={(event) => handleRate(Number(event.target.value))}>{[0.75, 0.9, 1, 1.1, 1.25, 1.5, 2].map((value) => <option value={value} key={value}>{value}×</option>)}</select></label></div>
     </section>
-    <TranscriptPanel segments={segments} activeSegmentId={activeSegment?.id} loopSegmentId={loopSegmentId} showTranslation={showTranslation} onSeek={seek} onLoop={toggleLoop} onAction={(action, segment) => onSegmentAction?.(action, segment)} />
+    {showTranscript && <TranscriptPanel segments={segments} activeSegmentId={activeSegment?.id} loopSegmentId={loopSegmentId} showTranslation={showTranslation} onSeek={seek} onLoop={toggleLoop} onAction={(action, segment) => onSegmentAction?.(action, segment)} />}
   </div>;
 }

@@ -9,6 +9,32 @@ export type ResourceMetadata = {
   tags: string[];
   learningUses: LearningUse[];
   mediaSegments: MediaSegment[];
+  mediaDraftSegments?: MediaSegment[];
+  media?: {
+    kind?: "audio" | "video";
+    durationMs?: number;
+    source?: string;
+    transcriptSource?: "srt" | "vtt" | "rss" | "source" | "stt" | "manual" | string;
+    extensiveReady?: boolean;
+    intensiveStatus?: "not_requested" | "queued" | "processing" | "needs_provider" | "review_required" | "ready" | "failed" | string;
+    segmentCount?: number;
+    playable?: boolean;
+    sttAccessible?: boolean;
+    transcriptAvailable?: boolean;
+    sourceRestricted?: boolean;
+    sidecarSubtitleKey?: string;
+    sidecarSubtitleType?: "srt" | "vtt" | string;
+    draftArtifactKey?: string;
+    qaArtifactKey?: string;
+    previousPublished?: { segments: MediaSegment[]; publishedAt: string; transcriptSource?: string }[];
+    [key: string]: unknown;
+  };
+  mediaReview?: {
+    totalSegments: number;
+    translatedSegments: number;
+    issues: { id: string; blockId?: string; severity: "error" | "warning" | "info"; type: string; message: string }[];
+    checkedAt: string;
+  };
   candidateVocabulary: { word: string; meaning?: string; example?: string }[];
   wordList?: { count: number; importedCount: number; words: { word: string; definition?: string; phonetic?: string; example?: string; tags?: string }[] };
   dictionary?: { entryCount: number; sourceId?: number };
@@ -107,7 +133,18 @@ function normalizeSegments(value: unknown): MediaSegment[] {
     const originalText = String(item.originalText || item.text || "").trim();
     if (!Number.isFinite(startMs) || !originalText) return [];
     const endMs = Number(item.endMs);
-    return [{ id: typeof item.id === "string" || typeof item.id === "number" ? item.id : `segment-${index}`, startMs, endMs: Number.isFinite(endMs) ? endMs : undefined, originalText, translationText: String(item.translationText || "").trim() || undefined }];
+    const fallbackEnd = startMs + 5000;
+    return [{
+      id: typeof item.id === "string" && item.id.trim() ? item.id.trim() : `s${String(index + 1).padStart(4, "0")}`,
+      startMs,
+      endMs: Number.isFinite(endMs) && endMs > startMs ? endMs : fallbackEnd,
+      originalText,
+      translationText: String(item.translationText || "").trim() || undefined,
+      speaker: String(item.speaker || "").trim() || undefined,
+      confidence: Number.isFinite(Number(item.confidence)) ? Number(item.confidence) : undefined,
+      manualEdited: Boolean(item.manualEdited),
+      needsReview: Boolean(item.needsReview),
+    }];
   }).sort((first, second) => first.startMs - second.startMs);
 }
 
@@ -124,6 +161,7 @@ export function parseResourceMetadata(value: unknown, typeValue: unknown = "Othe
     tags: normalizeTags(source.tags),
     learningUses: normalizeLearningUses(source.learningUses, type),
     mediaSegments: normalizeSegments(rawSegments),
+    mediaDraftSegments: normalizeSegments(source.mediaDraftSegments),
     candidateVocabulary: Array.isArray(source.candidateVocabulary) ? source.candidateVocabulary.flatMap((entry) => entry && typeof entry === "object" && String((entry as Record<string, unknown>).word || "").trim() ? [{ word: String((entry as Record<string, unknown>).word).trim().toLowerCase(), meaning: String((entry as Record<string, unknown>).meaning || "").trim(), example: String((entry as Record<string, unknown>).example || "").trim() }] : []) : [],
   };
 }

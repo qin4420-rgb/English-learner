@@ -1,5 +1,5 @@
 import { applePodcastResourceKey, parseApplePodcastUrl } from "@/app/apple-podcasts.mjs";
-import { processPodcastResource } from "@/app/api/_lib/podcasts";
+import { initializeProcessingJob, runProcessingWorkUnit } from "@/app/api/_lib/resource-processing";
 import { ensureDatabase, getDatabase, getOwnerId, jsonError } from "@/app/api/_lib/runtime";
 import { parseResourceMetadata, stringifyResourceMetadata } from "@/app/resource-model";
 
@@ -19,6 +19,7 @@ export async function POST(request: Request) {
     const metadataJson = stringifyResourceMetadata({
       ...currentMetadata,
       podcast: { ...currentPodcast, provider: "apple_podcasts", ...podcast, studyMode: "intensive", intensiveStatus: "queued" },
+      media: { ...currentMetadata.media, kind: "audio", source: String(currentPodcast.audioUrl || ""), extensiveReady: true, intensiveStatus: "queued", playable: true, sttAccessible: false, transcriptAvailable: false, sourceRestricted: false },
       learningUses: ["Listening", "Speaking", "Vocabulary"],
     }, "Podcast");
     if (resourceId) {
@@ -30,14 +31,11 @@ export async function POST(request: Request) {
         .bind(ownerId, `Podcast Episode ${podcast.episodeId}`, "等待解析公开RSS、音频与Transcript", resourceKey, podcast.appleUrl, metadataJson).run();
       resourceId = Number(result.meta.last_row_id);
     }
-    const activeJob = await getDatabase().prepare("SELECT id FROM processing_jobs WHERE owner_id=? AND result_resource_id=? AND status IN ('queued','processing') ORDER BY id DESC LIMIT 1")
+    const activeJob = await getDatabase().prepare("SELECT id FROM processing_jobs WHERE owner_id=? AND result_resource_id=? AND status IN ('queued','running','processing','pausing','paused') ORDER BY id DESC LIMIT 1")
       .bind(ownerId, resourceId).first<{ id: number }>();
     let jobId = Number(activeJob?.id || 0);
     if (!jobId) {
-      const job = await getDatabase().prepare(`INSERT INTO processing_jobs (owner_id,input_type,source_name,source_url,status,stage,progress,result_resource_id,delete_original_on_success)
-        VALUES (?,'url','Apple Podcast Episode',?,'queued','解析Podcast',0,?,0)`)
-        .bind(ownerId, podcast.appleUrl, resourceId).run();
-      jobId = Number(job.meta.last_row_id);
+      jobId = await initializeProcessingJob({ ownerId, resourceId, inputType: "url", sourceName: "Apple Podcast Episode", sourceUrl: podcast.appleUrl });
     }
     return Response.json({ ok: true, resourceId, jobId, existing: Boolean(existing) });
   } catch (error) { return jsonError(error, error instanceof Error && /Apple Podcasts|具体单集/.test(error.message) ? 400 : 500); }
@@ -51,7 +49,7 @@ export async function PATCH(request: Request) {
     if (!body.resourceId || !body.jobId) return jsonError(new Error("缺少Podcast处理任务"), 400);
     const job = await getDatabase().prepare("SELECT id FROM processing_jobs WHERE id=? AND result_resource_id=? AND owner_id=?").bind(body.jobId, body.resourceId, ownerId).first();
     if (!job) return jsonError(new Error("Podcast处理任务不存在"), 404);
-    const result = await processPodcastResource({ ownerId, resourceId: body.resourceId, jobId: body.jobId });
+    const result = await runProcessingWorkUnit({ ownerId, jobId: body.jobId });
     return Response.json({ ok: true, ...result });
   } catch (error) { return jsonError(error); }
 }

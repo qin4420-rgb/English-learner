@@ -1,7 +1,10 @@
 import { canonicalBlocks, renderReviewMarkdown, validateArticleDraft } from "@/app/article-review.mjs";
+import { chooseTranscriptSource, normalizeMediaSegments, normalizeProviderSegments, parseTimedSubtitle, validateMediaDraft } from "@/app/media-processing.mjs";
 import { createPipelineSteps, mapProcessingError, nextRunnableStep, normalizeJobStatus, type PipelineStepKey } from "@/app/processing-pipeline.mjs";
 import { normalizeResourceType, parseResourceMetadata, stringifyResourceMetadata } from "@/app/resource-model";
+import type { MediaSegment } from "@/app/types";
 import { distillDocument, extractUploadedText, extractWebPage, slugify, translateBlocksDetailed } from "./distill";
+import { resolvePodcastMediaSource } from "./podcasts";
 import { runOCR, runSTT, runSTTUrl } from "./providers";
 import { getDatabase, getMediaBucket, getRuntimeBindings } from "./runtime";
 
@@ -9,6 +12,16 @@ type JobInput = { ownerId: string; resourceId: number; inputType: string; source
 type ProcessInput = { ownerId: string; jobId: number };
 type StepRow = Record<string, unknown> & { id: number; step_key: PipelineStepKey; step_label: string; sort_order: number; status: string; output_ref: string };
 type StepExecutionResult = { completed: boolean; outputRef?: string; detail?: Record<string, unknown>; progressCurrent?: number; progressTotal?: number };
+
+const MEDIA_TYPES = new Set(["Audio", "Video", "Podcast"]);
+const MEDIA_STEP_LABELS: Partial<Record<PipelineStepKey, string>> = {
+  original: "确认媒体来源", extract: "生成文字稿", structure: "整理字幕时间轴", blockify: "生成精听分段",
+  enrich: "整理媒体信息", translate: "翻译精听分段", qa: "媒体质量检查", review: "媒体人工复核", publish: "发布精听资料",
+};
+
+function mediaKind(type: string): "audio" | "video" {
+  return type === "Video" ? "video" : "audio";
+}
 
 function artifactPrefix(ownerId: string, resourceId: number, jobId: number) {
   return `${ownerId}/processing/${resourceId}/${jobId}`;
@@ -52,7 +65,8 @@ export async function initializeProcessingJob(input: JobInput) {
     input.ownerId, input.inputType, input.sourceName, input.sourceUrl || "", input.uploadId || null, input.resourceId, startAt,
   ).run();
   const jobId = Number(result.meta.last_row_id);
-  const steps = createPipelineSteps(normalizeResourceType(resource.resource_type), startAt);
+  const resourceType = normalizeResourceType(resource.resource_type);
+  const steps = createPipelineSteps(resourceType, startAt).map((step) => MEDIA_TYPES.has(resourceType) && MEDIA_STEP_LABELS[step.key] ? { ...step, label: MEDIA_STEP_LABELS[step.key] as string } : step);
   await database.batch(steps.map((step) => database.prepare(`INSERT INTO processing_job_steps (
     owner_id,job_id,step_key,step_label,sort_order,status,attempt_count,progress_current,progress_total
   ) VALUES (?,?,?,?,?,?,?,?,?)`).bind(input.ownerId, jobId, step.key, step.label, step.order, step.status, 0, 0, 0)));
@@ -100,23 +114,77 @@ async function executeStep(job: Record<string, unknown>, resource: Record<string
     let title = String(resource.title || job.source_name || "学习资料");
     let text = "";
     let pageCount = 0;
-    let segments: unknown[] = [];
-    if (String(job.input_type) === "paste" && step.output_ref) {
+    const segments: unknown[] = [];
+    if (MEDIA_TYPES.has(type)) {
+      const metadata = parseResourceMetadata(resource.metadata_json, type);
+      const currentMedia = metadata.media || {};
+      let playableSource = String(currentMedia.source || metadata.podcast?.audioUrl || job.source_url || resource.source_url || "");
+      let durationMs = Number(currentMedia.durationMs || metadata.podcast?.durationMs || 0);
+      let rssSegments: MediaSegment[] = [];
+      let podcast = metadata.podcast;
+      let sourceRestricted = Boolean(currentMedia.sourceRestricted);
+      let transcriptText = "";
+      if (type === "Podcast") {
+        const discovered = await resolvePodcastMediaSource(resource);
+        title = discovered.title;
+        playableSource = discovered.audioUrl;
+        durationMs = discovered.durationMs;
+        rssSegments = discovered.segments;
+        transcriptText = discovered.transcriptText;
+        podcast = discovered.podcast as typeof metadata.podcast;
+        sourceRestricted = discovered.restricted;
+      }
+      let sidecarSegments: MediaSegment[] = [];
+      if (currentMedia.sidecarSubtitleKey) {
+        const object = await getMediaBucket().get(String(currentMedia.sidecarSubtitleKey));
+        if (object) sidecarSegments = parseTimedSubtitle(await object.text(), String(currentMedia.sidecarSubtitleType || "srt"));
+      }
+      const existingDraft = metadata.mediaDraftSegments || [];
+      const forceStt = currentMedia.forceTranscriptSource === "stt";
+      const forceRegenerate = currentMedia.forceRegenerate === true;
+      const selected = chooseTranscriptSource({
+        sidecarSegments: forceStt ? [] : sidecarSegments,
+        resourceSegments: forceStt || forceRegenerate ? [] : existingDraft.length ? existingDraft : metadata.mediaSegments,
+        rssSegments: forceStt ? [] : rssSegments,
+        publicSegments: forceStt ? [] : Array.isArray(currentMedia.sourceSegments) ? currentMedia.sourceSegments : [],
+        durationMs,
+      });
+      let transcriptSource = selected.source === "sidecar" ? String(currentMedia.sidecarSubtitleType || "srt") : selected.source === "resource" ? String(currentMedia.transcriptSource || "manual") : selected.source;
+      let normalized = selected.segments;
+      if (!normalized.length) {
+        if (sourceRestricted || !playableSource) throw Object.assign(new Error("泛听可用，但没有可用于精听的公开媒体或字幕"), { code: "MEDIA_SOURCE_RESTRICTED" });
+        if (!getRuntimeBindings().STT_ENDPOINT || !getRuntimeBindings().STT_PROVIDER) throw Object.assign(new Error("STT Provider 尚未配置"), { code: "STT_REQUIRED" });
+        const transcribed = job.upload_id
+          ? await (async () => { const { upload, bytes } = await loadUpload(ownerId, Number(job.upload_id)); return runSTT(bytes, String(upload.content_type), String(upload.filename || title)); })()
+          : await runSTTUrl(playableSource);
+        normalized = normalizeProviderSegments(transcribed.segments);
+        if (!normalized.length && transcribed.text.trim()) normalized = normalizeMediaSegments([{ id: "s0001", startMs: 0, endMs: durationMs || 5000, originalText: transcribed.text }], { durationMs });
+        transcriptSource = "stt";
+        transcriptText = transcribed.text;
+      }
+      if (!normalized.length) throw Object.assign(new Error("没有生成可用Timed Segments"), { code: "SOURCE_EXTRACTION_FAILED" });
+      text = normalized.map((segment) => segment.originalText).join("\n");
+      const mediaInfo = {
+        kind: mediaKind(type), durationMs, source: playableSource, transcriptSource,
+        extensiveReady: Boolean(currentMedia.extensiveReady ?? true), intensiveStatus: "processing",
+        segmentCount: normalized.length, playable: Boolean(playableSource), sttAccessible: Boolean(playableSource && !sourceRestricted),
+        transcriptAvailable: true, sourceRestricted, forceTranscriptSource: "", forceRegenerate: false,
+      };
+      const nextMetadata = stringifyResourceMetadata({ ...metadata, podcast, media: { ...currentMedia, ...mediaInfo } }, type);
+      await getDatabase().prepare("UPDATE resources SET title=?,metadata_json=?,processing_status='running',updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?")
+        .bind(title, nextMetadata, resourceId, ownerId).run();
+      const artifact = { title, text, segments: normalized, transcriptText, mediaInfo, extractedAt: new Date().toISOString() };
+      return { completed: true, outputRef: await putJson(`${prefix}/raw-transcript.json`, artifact), detail: { title, transcriptSource, durationMs, segments: normalized.length, atomicSTT: transcriptSource === "stt" } };
+    } else if (String(job.input_type) === "paste" && step.output_ref) {
       text = await getText(step.output_ref);
     } else if (type === "Article" && job.source_url) {
       const extracted = await extractWebPage(String(job.source_url)); title = extracted.title; text = extracted.text;
-    } else if (["Audio", "Video"].includes(type) && !job.upload_id) {
-      if (!getRuntimeBindings().STT_ENDPOINT || !getRuntimeBindings().STT_PROVIDER) throw Object.assign(new Error("STT Provider 尚未配置"), { code: "STT_REQUIRED" });
-      const value = await runSTTUrl(String(job.source_url || resource.source_url || resource.url)); text = value.text; segments = value.segments;
     } else if (job.upload_id) {
       const { upload, bytes } = await loadUpload(ownerId, Number(job.upload_id));
       title = String(upload.filename || title);
       if (type === "Image") {
         if (!getRuntimeBindings().OCR_ENDPOINT || !getRuntimeBindings().OCR_PROVIDER) throw Object.assign(new Error("OCR Provider 尚未配置"), { code: "OCR_REQUIRED" });
         text = await runOCR(bytes, String(upload.content_type), title);
-      } else if (["Audio", "Video"].includes(type)) {
-        if (!getRuntimeBindings().STT_ENDPOINT || !getRuntimeBindings().STT_PROVIDER) throw Object.assign(new Error("STT Provider 尚未配置"), { code: "STT_REQUIRED" });
-        const value = await runSTT(bytes, String(upload.content_type), title); text = value.text; segments = value.segments;
       } else {
         try {
           const value = await extractUploadedText(bytes, title, String(upload.content_type)); title = value.title; text = value.text; pageCount = value.pageCount || 0;
@@ -133,6 +201,14 @@ async function executeStep(job: Record<string, unknown>, resource: Record<string
 
   if (step.step_key === "structure") {
     const extractRef = await stepOutput(ownerId, jobId, "extract");
+    if (MEDIA_TYPES.has(type)) {
+      const extracted = await getJson<{ title: string; text: string; segments: MediaSegment[]; mediaInfo: Record<string, unknown> }>(extractRef);
+      const normalized = normalizeMediaSegments(extracted.segments, { durationMs: Number(extracted.mediaInfo.durationMs || 0) });
+      const contentHash = await sha256(normalized.map((segment) => `${segment.startMs}|${segment.endMs}|${segment.originalText}`).join("\n"));
+      await putJson(`${prefix}/media-info.json`, extracted.mediaInfo);
+      const outputRef = await putJson(`${prefix}/segments.json`, { title: extracted.title, mediaInfo: extracted.mediaInfo, segments: normalized, contentHash });
+      return { completed: true, outputRef, detail: { title: extracted.title, mediaInfo: extracted.mediaInfo, contentHash, totalSegments: normalized.length }, progressCurrent: normalized.length, progressTotal: normalized.length };
+    }
     let title = String(resource.title || "学习资料");
     let text = "";
     let pageCount = 0;
@@ -146,13 +222,20 @@ async function executeStep(job: Record<string, unknown>, resource: Record<string
   }
 
   if (step.step_key === "blockify") {
+    if (MEDIA_TYPES.has(type)) {
+      const structured = await getJson<{ title: string; mediaInfo: Record<string, unknown>; segments: MediaSegment[] }>(await stepOutput(ownerId, jobId, "structure"));
+      const segments = normalizeMediaSegments(structured.segments, { durationMs: Number(structured.mediaInfo.durationMs || 0) });
+      return { completed: true, outputRef: await putJson(`${prefix}/media-segments.json`, segments), detail: { totalSegments: segments.length, resourceType: type }, progressCurrent: segments.length, progressTotal: segments.length };
+    }
     const structured = await getText(await stepOutput(ownerId, jobId, "structure"));
     const blocks = canonicalBlocks(structured).map((block, index) => ({ ...block, id: ["Audio", "Video"].includes(type) ? `s${String(index + 1).padStart(4, "0")}` : block.id }));
     return { completed: true, outputRef: await putJson(`${prefix}/blocks.json`, blocks), detail: { totalBlocks: blocks.length }, progressCurrent: blocks.length, progressTotal: blocks.length };
   }
 
   if (step.step_key === "enrich") {
-    const structured = await getText(await stepOutput(ownerId, jobId, "structure"));
+    const structured = MEDIA_TYPES.has(type)
+      ? (await getJson<{ segments: MediaSegment[] }>(await stepOutput(ownerId, jobId, "structure"))).segments.map((segment) => segment.originalText).join("\n\n")
+      : await getText(await stepOutput(ownerId, jobId, "structure"));
     const structureStep = (await rowsForJob(ownerId, jobId)).find((item) => item.step_key === "structure");
     const detail = JSON.parse(String(structureStep?.detail_json || "{}")) as { title?: string; pageCount?: number };
     const result = await distillDocument(detail.title || String(resource.title), structured, detail.pageCount || 0);
@@ -161,12 +244,14 @@ async function executeStep(job: Record<string, unknown>, resource: Record<string
   }
 
   if (step.step_key === "translate") {
-    const blocks = await getJson<{ id: string; original: string }[]>(await stepOutput(ownerId, jobId, "blockify"));
+    const blocks = MEDIA_TYPES.has(type)
+      ? (await getJson<MediaSegment[]>(await stepOutput(ownerId, jobId, "blockify"))).map((segment) => ({ id: segment.id, original: segment.originalText }))
+      : await getJson<{ id: string; original: string }[]>(await stepOutput(ownerId, jobId, "blockify"));
     const outputRef = step.output_ref || `${prefix}/translation.json`;
     let artifact = { totalBlocks: blocks.length, translatedBlocks: 0, translations: {} as Record<string, string>, failedBlockIds: [] as string[], updatedAt: new Date().toISOString() };
     if (step.output_ref) artifact = await getJson<typeof artifact>(step.output_ref);
     const pending = blocks.filter((block) => !artifact.translations[block.id]);
-    if (!pending.length) return { completed: true, outputRef, detail: { totalBlocks: blocks.length }, progressCurrent: blocks.length, progressTotal: blocks.length };
+    if (!pending.length) return { completed: true, outputRef, detail: MEDIA_TYPES.has(type) ? { totalSegments: blocks.length } : { totalBlocks: blocks.length }, progressCurrent: blocks.length, progressTotal: blocks.length };
     const batch: typeof pending = [];
     let characters = 0;
     for (const block of pending) { if (batch.length >= 10 || (batch.length >= 5 && characters + block.original.length > 7000)) break; batch.push(block); characters += block.original.length; }
@@ -184,6 +269,35 @@ async function executeStep(job: Record<string, unknown>, resource: Record<string
   }
 
   if (step.step_key === "qa") {
+    if (MEDIA_TYPES.has(type)) {
+      const segments = await getJson<MediaSegment[]>(await stepOutput(ownerId, jobId, "blockify"));
+      const translations = await getJson<{ translations: Record<string, string> }>(await stepOutput(ownerId, jobId, "translate"));
+      const structure = await getJson<{ mediaInfo: Record<string, unknown> }>(await stepOutput(ownerId, jobId, "structure"));
+      const enrichment = await getJson<{ title: string; summary: string; themes: string[]; vocabulary: { word: string; meaning: string; example?: string }[] }>(await stepOutput(ownerId, jobId, "enrich"));
+      const draftSegments = normalizeMediaSegments(segments.map((segment) => ({ ...segment, translationText: translations.translations[segment.id] || segment.translationText })), { durationMs: Number(structure.mediaInfo.durationMs || 0) });
+      const validation = validateMediaDraft(draftSegments, {
+        durationMs: Number(structure.mediaInfo.durationMs || 0), mediaKind: String(structure.mediaInfo.kind || ""),
+        playableSource: String(structure.mediaInfo.source || ""), transcriptSource: String(structure.mediaInfo.transcriptSource || ""),
+      });
+      const draftKey = await putJson(`${prefix}/draft-media.json`, { mediaInfo: structure.mediaInfo, segments: draftSegments, savedAt: new Date().toISOString() });
+      const qaRef = await putJson(`${prefix}/qa.json`, validation);
+      const metadata = parseResourceMetadata(resource.metadata_json, type);
+      const nextMetadata = stringifyResourceMetadata({
+        ...metadata,
+        summary: enrichment.summary,
+        themes: enrichment.themes,
+        tags: metadata.tags.length ? metadata.tags : enrichment.themes,
+        candidateVocabulary: enrichment.vocabulary,
+        mediaDraftSegments: draftSegments,
+        media: { ...metadata.media, ...structure.mediaInfo, intensiveStatus: "review_required", segmentCount: draftSegments.length, transcriptAvailable: true, draftArtifactKey: draftKey, qaArtifactKey: qaRef },
+        mediaReview: validation,
+        reviewIssues: validation.issues,
+      }, type);
+      const translationStatus = validation.translatedSegments === validation.totalSegments ? "complete" : validation.translatedSegments ? "partial" : "pending";
+      await getDatabase().prepare("UPDATE resources SET title=?,description=?,metadata_json=?,processing_status='review_required',translation_status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?")
+        .bind(enrichment.title || resource.title, enrichment.summary, nextMetadata, translationStatus, resourceId, ownerId).run();
+      return { completed: true, outputRef: qaRef, detail: { draftRef: draftKey, errors: validation.issues.filter((issue) => issue.severity === "error").length, warnings: validation.issues.filter((issue) => issue.severity === "warning").length, totalSegments: validation.totalSegments }, progressCurrent: validation.translatedSegments, progressTotal: validation.totalSegments };
+    }
     const blocks = await getJson<{ id: string; type: string; original: string }[]>(await stepOutput(ownerId, jobId, "blockify"));
     const translations = await getJson<{ translations: Record<string, string> }>(await stepOutput(ownerId, jobId, "translate"));
     const enrichment = await getJson<{ title: string; summary: string; themes: string[]; vocabulary: { word: string; meaning: string; example?: string }[]; pageCount: number; aiEnhanced: boolean }>(await stepOutput(ownerId, jobId, "enrich"));
@@ -234,6 +348,12 @@ export async function runProcessingWorkUnit(input: ProcessInput) {
   }
   const resource = await database.prepare("SELECT * FROM resources WHERE id=? AND owner_id=?").bind(Number(job.result_resource_id), input.ownerId).first<Record<string, unknown>>();
   if (!resource) throw new Error("资源不存在");
+  const resourceType = normalizeResourceType(resource.resource_type);
+  if (MEDIA_TYPES.has(resourceType)) {
+    const metadata = parseResourceMetadata(resource.metadata_json, resourceType);
+    await database.prepare("UPDATE resources SET metadata_json=?,processing_status='running',updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?")
+      .bind(stringifyResourceMetadata({ ...metadata, media: { ...metadata.media, intensiveStatus: "processing" } }, resourceType), Number(job.result_resource_id), input.ownerId).run();
+  }
   await database.batch([
     database.prepare("UPDATE processing_job_steps SET status='running',attempt_count=attempt_count+1,started_at=COALESCE(started_at,CURRENT_TIMESTAMP),error_code='',error_message='',error_detail_json='{}',updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(step.id),
     database.prepare("UPDATE processing_jobs SET status='running',stage=?,current_step=?,attempt_count=attempt_count+1,error='',error_code='',error_message='',error_detail_json='{}',suggested_actions_json='[]',updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(step.step_label, step.step_key, input.jobId, input.ownerId),
@@ -274,10 +394,16 @@ export async function runProcessingWorkUnit(input: ProcessInput) {
     return { status: nextIsReview ? "review_required" : "queued", jobId: input.jobId, completedStep: step.step_key, nextStep: next?.step_key || "" };
   } catch (error) {
     const structured = mapProcessingError(error, { jobId: input.jobId, step: step.step_key, completedSteps: steps.filter((item) => ["completed", "skipped"].includes(item.status)).map((item) => item.step_key) });
+    let failedMetadata = "";
+    if (MEDIA_TYPES.has(resourceType)) {
+      const metadata = parseResourceMetadata(resource.metadata_json, resourceType);
+      failedMetadata = stringifyResourceMetadata({ ...metadata, media: { ...metadata.media, intensiveStatus: structured.code === "MEDIA_SOURCE_RESTRICTED" ? "unavailable" : structured.status } }, resourceType);
+    }
     await database.batch([
       database.prepare("UPDATE processing_job_steps SET status=?,error_code=?,error_message=?,error_detail_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=?").bind(structured.status === "needs_provider" ? "needs_provider" : structured.status === "needs_action" ? "needs_action" : "failed", structured.code, structured.userMessage, JSON.stringify({ technicalMessage: structured.technicalMessage, ...structured.detail }), step.id),
       database.prepare("UPDATE processing_jobs SET status=?,stage=?,error=?,error_code=?,error_message=?,error_detail_json=?,suggested_actions_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(structured.status, `${step.step_label}需要处理`, structured.userMessage, structured.code, structured.userMessage, JSON.stringify({ technicalMessage: structured.technicalMessage, ...structured.detail }), JSON.stringify(structured.suggestedActions), input.jobId, input.ownerId),
       database.prepare("UPDATE resources SET processing_status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(structured.status, Number(job.result_resource_id), input.ownerId),
+      ...(failedMetadata ? [database.prepare("UPDATE resources SET metadata_json=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(failedMetadata, Number(job.result_resource_id), input.ownerId)] : []),
     ]);
     return { status: structured.status, jobId: input.jobId, error: structured };
   }

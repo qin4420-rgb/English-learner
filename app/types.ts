@@ -277,11 +277,37 @@ export type OneDriveStatus = {
 export type MediaKind = "audio" | "video";
 
 export type MediaSegment = {
-  id: string | number;
+  id: string;
   startMs: number;
-  endMs?: number;
+  endMs: number;
   originalText: string;
   translationText?: string;
+  speaker?: string;
+  confidence?: number;
+  manualEdited?: boolean;
+  needsReview?: boolean;
+};
+
+export type MediaReviewPayload = {
+  resource: ResourceItem;
+  kind: MediaKind;
+  sourceUrl: string;
+  segments: MediaSegment[];
+  publishedSegments: MediaSegment[];
+  review: {
+    totalSegments: number;
+    translatedSegments: number;
+    issues: ReviewIssue[];
+    checkedAt: string;
+  };
+  media: {
+    durationMs: number;
+    transcriptSource: string;
+    intensiveStatus: string;
+    extensiveReady: boolean;
+    playable: boolean;
+  };
+  hasPublished: boolean;
 };
 
 export type MediaProgressSnapshot = {

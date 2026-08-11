@@ -50,8 +50,13 @@ export async function POST(request: Request) {
       // A learning resource is separate from a Tool Directory bookmark that may
       // point to the same public URL. Keep the canonical source in source_url.
       const resourceUrl = `urn:english-room:link:${encodeURIComponent(sourceUrl)}`;
-      const resourceId = await insertResource(ownerId, { title, url: resourceUrl, sourceUrl, type, folderId: body.folderId || null, tags: body.tags, learningUses: body.learningUses, status: ["Audio", "Video"].includes(type) ? "needs_provider" : "waiting" });
-      if (["Article", "Audio", "Video"].includes(type)) {
+      const isMedia = ["Audio", "Video", "Podcast"].includes(type);
+      const resourceId = await insertResource(ownerId, {
+        title, url: resourceUrl, sourceUrl, type, folderId: body.folderId || null, tags: body.tags, learningUses: body.learningUses,
+        status: isMedia ? "ready" : "waiting",
+        metadata: isMedia ? { media: { kind: type === "Video" ? "video" : "audio", source: sourceUrl, extensiveReady: true, intensiveStatus: "not_requested", playable: true, sttAccessible: !/youtube\.com|youtu\.be|vimeo\.com/i.test(sourceUrl), transcriptAvailable: false, sourceRestricted: /youtube\.com|youtu\.be/i.test(sourceUrl) } } : undefined,
+      });
+      if (type === "Article") {
         const jobId = await initializeProcessingJob({ ownerId, resourceId, inputType: "url", sourceName: title, sourceUrl, uploadId: null });
         return Response.json({ ok: true, resources: [resourceId], jobs: [jobId], status: "queued" }, { status: 202 });
       }
@@ -70,8 +75,17 @@ export async function POST(request: Request) {
     for (const file of files) {
       const upload = await saveUpload(ownerId, file);
       const type = requestedType ? normalizeResourceType(requestedType) : inferResourceType(file.name, file.type);
-      const resourceId = await insertResource(ownerId, { title: file.name.replace(/\.[^.]+$/, ""), url: `urn:english-room:upload:${upload.id}`, type, folderId, tags, learningUses, metadata: { uploadId: upload.id, mimeType: file.type, originalFilename: file.name }, status: ["WordList", "Dictionary"].includes(type) ? "processing" : "waiting" });
+      const isMedia = ["Audio", "Video", "Podcast"].includes(type);
+      const resourceId = await insertResource(ownerId, {
+        title: file.name.replace(/\.[^.]+$/, ""), url: `urn:english-room:upload:${upload.id}`, type, folderId, tags, learningUses,
+        metadata: { uploadId: upload.id, mimeType: file.type, originalFilename: file.name, ...(isMedia ? { media: { kind: type === "Video" ? "video" : "audio", source: `/api/resources/__RESOURCE_ID__/media`, extensiveReady: true, intensiveStatus: "not_requested", playable: true, sttAccessible: true, transcriptAvailable: false, sourceRestricted: false } } : {}) },
+        status: ["WordList", "Dictionary"].includes(type) ? "processing" : isMedia ? "ready" : "waiting",
+      });
       resourceIds.push(resourceId);
+      if (isMedia) {
+        const mediaMetadata = stringifyResourceMetadata({ uploadId: upload.id, mimeType: file.type, originalFilename: file.name, tags, learningUses, media: { kind: type === "Video" ? "video" : "audio", source: `/api/resources/${resourceId}/media`, extensiveReady: true, intensiveStatus: "not_requested", playable: true, sttAccessible: true, transcriptAvailable: false, sourceRestricted: false } }, type);
+        await getDatabase().prepare("UPDATE resources SET metadata_json=?,processing_status='ready',updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(mediaMetadata, resourceId, ownerId).run();
+      }
       if (type === "WordList") {
         const words = parseWordList(new TextDecoder().decode(upload.bytes), file.name.toLowerCase().endsWith(".json") || file.type.includes("json"));
         if (!words.length) throw new Error(`${file.name} 没有识别到词汇`);
@@ -89,7 +103,7 @@ export async function POST(request: Request) {
         }
         const metadataJson = stringifyResourceMetadata({ uploadId: upload.id, mimeType: file.type, originalFilename: file.name, tags, dictionary: { entryCount: entries.length, sourceId } }, type);
         await getDatabase().prepare("UPDATE resources SET metadata_json=?,processing_status='ready',description=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND owner_id=?").bind(metadataJson, `${entries.length} 条结构化词典词条`, resourceId, ownerId).run();
-      } else {
+      } else if (!isMedia) {
         const jobId = await initializeProcessingJob({ ownerId, resourceId, inputType: "upload", sourceName: file.name, uploadId: upload.id });
         jobIds.push(jobId);
       }

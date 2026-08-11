@@ -1,6 +1,6 @@
 import { initializeProcessingJob } from "@/app/api/_lib/resource-processing";
 import { ensureDatabase, getDatabase, getMediaBucket, getOwnerId, getRuntimeBindings, jsonError } from "@/app/api/_lib/runtime";
-import { inferResourceType } from "@/app/resource-model";
+import { inferResourceType, parseResourceMetadata } from "@/app/resource-model";
 import { normalizeJobStatus } from "@/app/processing-pipeline.mjs";
 import type { ProcessingJob, ProcessingJobStep } from "@/app/types";
 
@@ -62,7 +62,7 @@ export async function POST(request: Request) {
     const inputType = body.inputType || (body.pastedText ? "paste" : "url");
     let sourceUrl = body.sourceUrl?.trim() || "";
     const pastedText = body.pastedText?.trim() || "";
-    const uploadId = Number(body.uploadId || 0) || null;
+    let uploadId = Number(body.uploadId || 0) || null;
     if (inputType === "paste" && pastedText.length < 20) return jsonError(new Error("请粘贴至少20个字符的英文正文"), 400);
 
     if (!resourceId) {
@@ -80,9 +80,11 @@ export async function POST(request: Request) {
       resourceId = Number(result.meta.last_row_id || 0);
       if (!resourceId) resourceId = Number((await getDatabase().prepare("SELECT id FROM resources WHERE owner_id=? AND url=?").bind(ownerId, resourceUrl).first<{ id: number }>())?.id || 0);
     } else {
-      const resource = await getDatabase().prepare("SELECT source_url,url FROM resources WHERE owner_id=? AND id=?").bind(ownerId, resourceId).first<Record<string, unknown>>();
+      const resource = await getDatabase().prepare("SELECT source_url,url,resource_type,metadata_json,title FROM resources WHERE owner_id=? AND id=?").bind(ownerId, resourceId).first<Record<string, unknown>>();
       if (!resource) return jsonError(new Error("资源不存在"), 404);
       sourceUrl ||= String(resource.source_url || "");
+      const metadata = parseResourceMetadata(resource.metadata_json, resource.resource_type);
+      uploadId ||= Number(metadata.uploadId || 0) || null;
     }
 
     const jobId = await initializeProcessingJob({ ownerId, resourceId, inputType, sourceName: body.title?.trim() || sourceUrl || `资源 #${resourceId}`, sourceUrl, uploadId, startAt: inputType === "paste" ? "structure" : "original", pastedText });

@@ -1787,6 +1787,36 @@ button.tag { cursor: pointer; }
 .review-preview > header button { width: 36px; height: 36px; border: 0; border-radius: 50%; cursor: pointer; }
 .review-preview > section { padding: 18px 0; font-family: Georgia, serif; font-size: 19px; line-height: 1.8; }
 .review-preview-translation { margin-top: 10px; padding: 12px 16px; border-left: 3px solid #d8d1c5; color: #686b65; font-family: Arial, "PingFang SC", sans-serif; font-size: 15px; }
+.media-review-workspace { min-height: 100vh; padding: 18px 24px 48px; background: #f3f1eb; }
+.media-review-player { margin: 12px 0; }
+.media-review-player .media-learning-studio { display: block; }
+.media-review-player .media-player-card { position: relative; top: 0; }
+.media-review-editor { display: grid; grid-template-columns: minmax(260px, 34%) minmax(420px, 1fr); gap: 12px; min-height: 560px; }
+.media-segment-list, .media-segment-editor { padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.media-segment-list { max-height: 720px; overflow: auto; }
+.media-segment-list > header { position: sticky; z-index: 2; top: -12px; margin: -12px -12px 8px; padding: 12px; display: flex; justify-content: space-between; background: var(--surface); border-bottom: 1px solid var(--line); }
+.media-segment-list > header small, .media-segment-list > small { color: var(--muted); }
+.media-segment-list > button { width: 100%; padding: 9px 8px; display: grid; grid-template-columns: 74px 1fr; gap: 8px; text-align: left; border: 0; border-bottom: 1px solid #eeeae1; background: transparent; cursor: pointer; }
+.media-segment-list > button.active { border-radius: 7px; background: var(--blue-soft); box-shadow: inset 3px 0 var(--blue); }
+.media-segment-list > button.has-issue:not(.active) { box-shadow: inset 3px 0 #d69b42; }
+.media-segment-list time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.media-segment-list span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.media-segment-list b { margin-right: 8px; color: var(--blue); }
+.media-segment-editor { display: grid; align-content: start; gap: 12px; }
+.media-segment-editor > header { display: flex; justify-content: space-between; align-items: center; }
+.media-segment-editor label { display: grid; gap: 5px; font-weight: 700; }
+.media-segment-editor input, .media-segment-editor textarea { width: 100%; padding: 9px; border: 1px solid var(--line); border-radius: 8px; background: white; font: inherit; line-height: 1.55; }
+.media-time-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.media-segment-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.media-segment-actions button, .media-segment-editor > header button { padding: 7px 10px; border: 1px solid var(--line); border-radius: 7px; background: #faf8f3; cursor: pointer; }
+.media-segment-actions .danger { color: #a33c31; }
+.media-review-warning { padding: 8px 10px; border-radius: 7px; background: var(--amber-soft); color: #825e20; }
+.media-segment-issues { display: grid; gap: 5px; }
+.media-segment-issues span { padding: 6px 8px; border-radius: 6px; background: #fbf3e2; }
+.media-segment-issues .error { color: #a33c31; }
+.media-review-preview { width: min(1180px, 100%); margin: 0 auto; padding: 18px; border-radius: 16px; background: #f6f4ef; box-shadow: 0 30px 100px rgba(12,14,12,.35); }
+.media-review-preview > header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.media-review-preview > header button { width: 38px; height: 38px; border: 0; border-radius: 50%; cursor: pointer; }
 
 @media (max-width: 1000px) {
   .review-workspace-header { grid-template-columns: 1fr; }
@@ -1810,6 +1840,10 @@ button.tag { cursor: pointer; }
   .review-block > .review-translation-cell,
   .review-block-issues, .review-ai-suggestion { grid-column: 1; }
   .review-batch-toolbar { top: 0; }
+  .media-review-workspace { padding: 10px; }
+  .media-review-editor { grid-template-columns: 1fr; }
+  .media-segment-list { max-height: 320px; }
+  .media-time-fields { grid-template-columns: 1fr; }
   .reader-v3 { padding-left: 0; }
   .reader-rail { position: fixed; z-index: 72; top: auto; right: auto; bottom: calc(72px + env(safe-area-inset-bottom)); left: 9px; display: flex; transform: none; }
   .reader-rail button { width: 33px; height: 33px; }

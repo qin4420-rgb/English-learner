@@ -7,6 +7,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import ResourceReviewWorkspace from "./components/ResourceReviewWorkspace";
+import MediaReviewWorkspace from "./components/MediaReviewWorkspace";
 import type { DictionarySourceItem, OneDriveStatus, ProcessingJob, ProcessingJobStep, ProviderStatus, ResourceItem, UploadItem } from "./types";
 
 type MaintenanceTarget = { section: "processing" | "providers"; jobId?: number; resourceId?: number };
@@ -37,9 +38,10 @@ function currentProgress(job: ProcessingJob) {
 
 function reviewInfo(resource: ResourceItem) {
   try {
-    const metadata = JSON.parse(resource.metadataJson || "{}") as { review?: { issues?: { severity?: string }[]; translatedBlocks?: number; totalBlocks?: number } };
-    const issues = metadata.review?.issues || [];
-    return { errors: issues.filter((issue) => issue.severity === "error").length, warnings: issues.filter((issue) => issue.severity === "warning").length, translated: metadata.review?.translatedBlocks || 0, total: metadata.review?.totalBlocks || 0 };
+    const metadata = JSON.parse(resource.metadataJson || "{}") as { review?: { issues?: { severity?: string }[]; translatedBlocks?: number; totalBlocks?: number }; mediaReview?: { issues?: { severity?: string }[]; translatedSegments?: number; totalSegments?: number } };
+    const review = metadata.mediaReview || metadata.review;
+    const issues = review?.issues || [];
+    return { errors: issues.filter((issue) => issue.severity === "error").length, warnings: issues.filter((issue) => issue.severity === "warning").length, translated: "translatedSegments" in (review || {}) ? Number(metadata.mediaReview?.translatedSegments || 0) : Number(metadata.review?.translatedBlocks || 0), total: "totalSegments" in (review || {}) ? Number(metadata.mediaReview?.totalSegments || 0) : Number(metadata.review?.totalBlocks || 0) };
   } catch { return { errors: 0, warnings: 0, translated: 0, total: 0 }; }
 }
 
@@ -129,7 +131,11 @@ export default function MaintenanceCenter({ initialTarget, oneDrive, aiConfigure
     const data = await jsonRequest<{ sources: DictionarySourceItem[] }>("/api/dictionaries"); setDictionaries(data.sources);
   }
 
-  if (reviewResourceId) return <ResourceReviewWorkspace resourceId={reviewResourceId} onClose={() => setReviewResourceId(0)} onPublished={async () => { await onReload(); await refreshJobs(); setReviewResourceId(0); }} onNotice={onNotice} />;
+  if (reviewResourceId) {
+    const reviewResource = resources.find((resource) => resource.id === reviewResourceId);
+    const reviewProps = { resourceId: reviewResourceId, onClose: () => setReviewResourceId(0), onPublished: async () => { await onReload(); await refreshJobs(); setReviewResourceId(0); }, onNotice };
+    return reviewResource && ["Audio", "Video", "Podcast"].includes(reviewResource.resourceType) ? <MediaReviewWorkspace {...reviewProps} /> : <ResourceReviewWorkspace {...reviewProps} />;
+  }
 
   return <section className="maintenance-workspace">
     <header className="maintenance-header"><div><p className="eyebrow">MAINTENANCE CENTER 2.0</p><h1>维护中心</h1><p>资料处理已经任务化；每一步都有记录，失败后可从断点继续。</p></div><button className="button secondary" onClick={onExport}>导出索引备份</button></header>
@@ -144,7 +150,7 @@ export default function MaintenanceCenter({ initialTarget, oneDrive, aiConfigure
           <div className="processing-overview">{[["处理中", counts.running], ["已暂停", counts.paused], ["需要处理", counts.action], ["待复核", counts.review], ["失败", counts.failed]].map(([label, count]) => <article key={label}><strong>{count}</strong><span>{label}</span></article>)}</div>
           <nav className="processing-subtabs">{(["queue", "review", "history"] as const).map((id) => <button className={processingTab === id ? "active" : ""} key={id} onClick={() => { setProcessingTab(id); setSelectedJobId(0); }}>{id === "queue" ? "任务队列" : id === "review" ? `待复核 ${reviewResources.length}` : "历史记录"}</button>)}</nav>
 
-          {processingTab === "review" ? <div className="review-resource-list">{reviewResources.map((resource) => { const info = reviewInfo(resource); return <article key={resource.id}><div><strong>{resource.title}</strong><small>{info.translated}/{info.total} 译文块 · {info.errors} 错误 · {info.warnings} 警告</small></div><button className="button primary" onClick={() => setReviewResourceId(resource.id)}>打开复核</button></article>; })}{!reviewResources.length && <div className="empty-state">当前没有待复核文章。</div>}</div> : selectedJob ? <JobDetail job={selectedJob} selectedStep={selectedStep} onSelectStep={setSelectedStepKey} onBack={() => setSelectedJobId(0)} onAction={jobAction} onReview={(id) => setReviewResourceId(id)} onProviders={() => setSection("providers")} /> : <div className="processing-job-grid">{jobList.filter((job) => processingTab === "queue" ? !["completed", "cancelled"].includes(job.status) : ["completed", "cancelled", "failed", "review_required"].includes(job.status)).map((job) => <JobCard key={job.id} job={job} onDetail={() => { setSelectedJobId(job.id); setSelectedStepKey(job.currentStep); }} onAction={jobAction} onReview={(id) => setReviewResourceId(id)} onProviders={() => setSection("providers")} />)}{!jobList.length && <div className="empty-state">还没有处理任务。点击“添加资料”开始。</div>}</div>}
+          {processingTab === "review" ? <div className="review-resource-list">{reviewResources.map((resource) => { const info = reviewInfo(resource); const unit = ["Audio", "Video", "Podcast"].includes(resource.resourceType) ? "Segments" : "译文块"; return <article key={resource.id}><div><strong>{resource.title}</strong><small>{info.translated}/{info.total} {unit} · {info.errors} 错误 · {info.warnings} 警告</small></div><button className="button primary" onClick={() => setReviewResourceId(resource.id)}>打开复核</button></article>; })}{!reviewResources.length && <div className="empty-state">当前没有待复核资料。</div>}</div> : selectedJob ? <JobDetail job={selectedJob} selectedStep={selectedStep} onSelectStep={setSelectedStepKey} onBack={() => setSelectedJobId(0)} onAction={jobAction} onReview={(id) => setReviewResourceId(id)} onProviders={() => setSection("providers")} /> : <div className="processing-job-grid">{jobList.filter((job) => processingTab === "queue" ? !["completed", "cancelled"].includes(job.status) : ["completed", "cancelled", "failed", "review_required"].includes(job.status)).map((job) => <JobCard key={job.id} job={job} onDetail={() => { setSelectedJobId(job.id); setSelectedStepKey(job.currentStep); }} onAction={jobAction} onReview={(id) => setReviewResourceId(id)} onProviders={() => setSection("providers")} />)}{!jobList.length && <div className="empty-state">还没有处理任务。点击“添加资料”开始。</div>}</div>}
         </>}
 
         {section === "dictionaries" && <section className="panel dictionary-manager"><div className="panel-heading"><div><p className="eyebrow">DICTIONARIES</p><h2>词典管理</h2><p>维护本地词典顺序并测试实际查词结果。</p></div></div><div className="dictionary-source-list">{dictionaries.map((source) => <article key={source.id}><label><input type="checkbox" checked={source.enabled} onChange={(event) => void updateDictionary(source.id, { enabled: event.target.checked })} /><span><strong>{source.name}</strong><small>{source.entryCount} 条词目</small></span></label><div><button onClick={() => void updateDictionary(source.id, { direction: "up" })}>↑</button><button onClick={() => void updateDictionary(source.id, { direction: "down" })}>↓</button></div></article>)}</div><form className="dictionary-test" onSubmit={(event) => { event.preventDefault(); void jsonRequest<{ dictionaryDefinition: string; dictionarySource?: string }>("/api/vocabulary/lookup", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ word: dictionaryTest }) }).then((result) => setDictionaryResult(`${result.dictionarySource || "基础词典"}：${result.dictionaryDefinition}`)).catch((error: Error) => onNotice(error.message)); }}><input value={dictionaryTest} onChange={(event) => setDictionaryTest(event.target.value)} placeholder="输入英文单词测试" /><button className="button secondary">测试</button></form>{dictionaryResult && <p className="dictionary-test-result">{dictionaryResult}</p>}</section>}

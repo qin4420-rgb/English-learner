@@ -23,11 +23,12 @@ export function parseNceLrc(text: string): MediaSegment[] {
     return [{
       id: `nce-${index}`,
       startMs: Math.round((Number(timestamp[1]) * 60 + Number(timestamp[2])) * 1000),
+      endMs: Math.round((Number(timestamp[1]) * 60 + Number(timestamp[2])) * 1000) + 5000,
       originalText: originalText.trim(),
       translationText: translation.join("|").trim() || undefined,
     } satisfies MediaSegment];
   }).sort((first, second) => first.startMs - second.startMs);
-  return rawSegments.map((segment, index) => ({ ...segment, endMs: rawSegments[index + 1]?.startMs }));
+  return rawSegments.map((segment, index) => ({ ...segment, endMs: rawSegments[index + 1]?.startMs || segment.startMs + 5000 }));
 }
 
 export default function NcePlayer({ progress, onSaved, onNotice }: { progress: ProgressItem[]; onSaved: () => Promise<void>; onNotice?: (message: string) => void }) {

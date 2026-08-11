@@ -112,16 +112,9 @@ export default function PodcastStudio({ resources, progress, onReloadResources, 
       setSelectedId(data.resourceId); setTab("intensive");
       await onReloadResources();
       onNotice("已加入精听处理；可以离开本页，后续状态会保留在处理中心。 ");
-      void fetch("/api/podcasts", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ resourceId: data.resourceId, jobId: data.jobId }) })
-        .then(async (result) => {
-          const processed = await result.json() as { error?: string; status?: string };
-          await onReloadResources();
-          if (!result.ok) onNotice(processed.error || "Podcast精听处理失败，原始Apple入口仍可使用。");
-          else if (processed.status === "needs_provider") onNotice("音频已找到，等待STT Provider配置。");
-          else if (processed.status === "failed") onNotice("泛听正常；当前Episode暂不能生成English Room精听版本。");
-          else onNotice("Podcast精听资料已生成，等待复核。");
-        })
-        .catch(() => onNotice("精听处理已排队，可在维护中心稍后重试。"));
+      void fetch("/api/processing/run", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jobId: data.jobId }) })
+        .then(() => onReloadResources())
+        .catch(() => onNotice("精听处理已排队，可在维护中心稍后继续。"));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : "加入精听失败";
       setError(message); onNotice(message);

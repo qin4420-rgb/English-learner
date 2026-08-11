@@ -35,7 +35,12 @@ export type TTSProvider = {
 async function callFileProvider(endpoint: string, apiKey: string | undefined, bytes: ArrayBuffer, contentType: string, filename: string) {
   const form = new FormData();
   form.append("file", new File([bytes], filename, { type: contentType || "application/octet-stream" }));
-  const response = await fetch(endpoint, { method: "POST", headers: apiKey ? { authorization: `Bearer ${apiKey}` } : undefined, body: form });
+  let response: Response;
+  try { response = await fetch(endpoint, { method: "POST", headers: apiKey ? { authorization: `Bearer ${apiKey}` } : undefined, body: form }); }
+  catch (error) {
+    const timeout = error instanceof Error && /timeout|timed out|abort/i.test(error.message);
+    throw Object.assign(new Error(timeout ? "STT Provider请求超时" : error instanceof Error ? error.message : "Provider请求失败"), { code: timeout ? "STT_TIMEOUT" : "AI_HTTP_ERROR" });
+  }
   const data = await response.json() as Record<string, unknown>;
   if (!response.ok) throw new Error(String(data.error || data.message || `Provider请求失败（${response.status}）`));
   return data;
@@ -63,7 +68,12 @@ export async function runSTT(bytes: ArrayBuffer, contentType: string, filename: 
 export async function runSTTUrl(sourceUrl: string) {
   const bindings = getRuntimeBindings();
   if (!bindings.STT_PROVIDER || !bindings.STT_ENDPOINT) throw new Error("STT Provider 尚未配置");
-  const response = await fetch(bindings.STT_ENDPOINT, { method: "POST", headers: { ...(bindings.STT_API_KEY ? { authorization: `Bearer ${bindings.STT_API_KEY}` } : {}), "content-type": "application/json" }, body: JSON.stringify({ url: sourceUrl }) });
+  let response: Response;
+  try { response = await fetch(bindings.STT_ENDPOINT, { method: "POST", headers: { ...(bindings.STT_API_KEY ? { authorization: `Bearer ${bindings.STT_API_KEY}` } : {}), "content-type": "application/json" }, body: JSON.stringify({ url: sourceUrl }) }); }
+  catch (error) {
+    const timeout = error instanceof Error && /timeout|timed out|abort/i.test(error.message);
+    throw Object.assign(new Error(timeout ? "STT Provider请求超时" : error instanceof Error ? error.message : "STT Provider请求失败"), { code: timeout ? "STT_TIMEOUT" : "AI_HTTP_ERROR" });
+  }
   const data = await response.json() as Record<string, unknown>;
   if (!response.ok) throw new Error(String(data.error || data.message || `STT Provider请求失败（${response.status}）`));
   const text = String(data.text || "").trim();
